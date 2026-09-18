@@ -1446,6 +1446,17 @@ namespace nvhttp {
       return;
     }
 
+    if (plank::session::confirmed_desktop_stage() == "greeter") {
+      // PAM can start GDM's user session, but the greeter X display is not the
+      // authenticated desktop. Return the existing transition status so the
+      // Client waits and relaunches after the media worker attaches to it.
+      BOOST_LOG(info) << "Deferring launch until GDM publishes the authenticated desktop"sv;
+      tree.put("root.gamesession", 0);
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
+      return;
+    }
+
     if (!proc::is_desktop_app((int) appid)) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -1608,6 +1619,14 @@ namespace nvhttp {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+      return;
+    }
+
+    if (plank::session::confirmed_desktop_stage() == "greeter") {
+      BOOST_LOG(info) << "Deferring resume until GDM publishes the authenticated desktop"sv;
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
       return;
     }
 
