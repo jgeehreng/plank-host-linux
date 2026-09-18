@@ -380,6 +380,32 @@ namespace nvhttp {
     return body;
   }
 
+  void maybe_start_user_session_after_pam(
+    const plank::auth::web_auth_step_t &step,
+    std::string_view peer
+  ) {
+    using state_e = plank::auth::step_t::state_e;
+    if (step.state != state_e::authenticated || step.session_token.empty() || !web_auth) {
+      return;
+    }
+    if (plank::session::confirmed_desktop_stage() != "greeter") {
+      return;
+    }
+    const auto identity = web_auth->identity(step.session_token, peer);
+    const auto uid = identity ? plank::auth::account_uid(*identity) : std::nullopt;
+    if (!uid) {
+      return;
+    }
+    const auto status = plank::session::request_user_session(*uid);
+    if (status == plank::session::display_request_status::submitted) {
+      BOOST_LOG(info) << "Requested a graphical session for the authenticated account after PAM"sv;
+    } else if (status == plank::session::display_request_status::wrong_user) {
+      BOOST_LOG(warning) << "Refusing to start a graphical session for an account that does not own the desktop"sv;
+    } else {
+      BOOST_LOG(warning) << "Unable to start a graphical session after PAM; the greeter remains"sv;
+    }
+  }
+
   /**
    * @brief Read a bounded JSON request body without logging it.
    *
@@ -422,7 +448,9 @@ namespace nvhttp {
       return;
     }
     const auto username = body["username"].get<std::string>();
-    const auto step = web_auth->begin(username, authentication_peer(request));
+    const auto peer = authentication_peer(request);
+    const auto step = web_auth->begin(username, peer);
+    maybe_start_user_session_after_pam(step, peer);
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 
@@ -458,8 +486,9 @@ namespace nvhttp {
       }
     }
     const auto conversation_id = body["conversation_id"].get<std::string>();
-    const auto step = web_auth->respond(conversation_id, authentication_peer(request),
-                                        std::move(responses));
+    const auto peer = authentication_peer(request);
+    const auto step = web_auth->respond(conversation_id, peer, std::move(responses));
+    maybe_start_user_session_after_pam(step, peer);
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 

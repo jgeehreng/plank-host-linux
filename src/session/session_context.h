@@ -48,6 +48,7 @@ namespace plank::session {
       acquire,
       activate,
       release,
+      start_user,
     } action {action_t::acquire};
     std::string layout;
     std::string mode_1;
@@ -96,6 +97,13 @@ namespace plank::session {
   std::optional<descriptor_t> active_seat0_graphical_session();
 
   /**
+   * Find a local seat0 X11 user session for an account, including an inactive
+   * session that logind can activate. Greeter and lock-screen sessions are
+   * ignored.
+   */
+  std::optional<descriptor_t> local_user_x11_session(uid_t account_uid);
+
+  /**
    * Find DISPLAY and Xauthority in a process belonging to the selected
    * logind session. Only a small environment whitelist is returned.
    */
@@ -129,6 +137,12 @@ namespace plank::session {
 
   /** Request a display transition from GDM or the authenticated user's desktop. */
   display_request_status request_display_transition(const display_request_t &request);
+
+  /**
+   * After PAM succeeds at the GDM greeter, ask the supervisor to start or
+   * activate that account's graphical session. Does not replay a password.
+   */
+  display_request_status request_user_session(uid_t account_uid);
 
   /** Mark a temporary physical-display lease active once native setup allocates its stream. */
   display_request_status activate_display_lease(uid_t account_uid);

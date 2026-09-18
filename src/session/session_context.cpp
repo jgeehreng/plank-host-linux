@@ -323,6 +323,39 @@ namespace plank::session {
     return result;
   }
 
+  std::optional<descriptor_t> local_user_x11_session(uid_t account_uid) {
+    if (account_uid == 0) return std::nullopt;
+    char **raw = nullptr;
+    const int count = sd_uid_get_sessions(account_uid, 0, &raw);
+    if (count <= 0 || raw == nullptr) {
+      if (raw != nullptr) {
+        for (char **session = raw; *session != nullptr; ++session) {
+          free(*session);
+        }
+        free(raw);
+      }
+      return std::nullopt;
+    }
+    std::optional<descriptor_t> found;
+    for (int index = 0; raw[index] != nullptr; ++index) {
+      auto candidate = describe(raw[index]);
+      free(raw[index]);
+      if (!candidate || candidate->uid != account_uid || candidate->remote ||
+          candidate->seat != "seat0" || candidate->type != "x11" ||
+          candidate->session_class != "user") {
+        continue;
+      }
+      if (candidate->state != "active" && candidate->state != "online") {
+        continue;
+      }
+      if (!found || (!found->active && candidate->active)) {
+        found = std::move(candidate);
+      }
+    }
+    free(raw);
+    return found;
+  }
+
   std::optional<environment_t> discover_environment(const descriptor_t &session) {
     if (!eligible_graphical_session(session)) return std::nullopt;
     const std::string required_runtime = "/run/user/" + std::to_string(session.uid);
@@ -417,15 +450,20 @@ namespace plank::session {
     const std::string_view action =
       request.action == display_request_t::action_t::acquire ? "acquire" :
       request.action == display_request_t::action_t::activate ? "activate" :
-                                                               "release";
+      request.action == display_request_t::action_t::release ? "release" :
+      request.action == display_request_t::action_t::start_user ? "start-user" :
+                                                                  std::string_view {};
     const bool acquire_valid = request.action != display_request_t::action_t::acquire ||
       ((request.layout == "single" || request.layout == "dual-horizontal") &&
        plank::topology::valid_virtual_layout_modes(
          request.layout, request.mode_1, request.mode_2
        ));
     const bool control_valid = request.action == display_request_t::action_t::acquire ||
-      (request.layout.empty() && request.mode_1.empty() && request.mode_2.empty());
-    if (!acquire_valid || !control_valid || request.account_uid == 0) {
+      ((request.action == display_request_t::action_t::activate ||
+        request.action == display_request_t::action_t::release ||
+        request.action == display_request_t::action_t::start_user) &&
+       request.layout.empty() && request.mode_1.empty() && request.mode_2.empty());
+    if (action.empty() || !acquire_valid || !control_valid || request.account_uid == 0) {
       return {};
     }
     const auto account_uid = std::to_string(request.account_uid);
@@ -459,9 +497,10 @@ namespace plank::session {
     const auto action = fields[1] == "acquire" ? display_request_t::action_t::acquire :
       fields[1] == "activate" ? display_request_t::action_t::activate :
       fields[1] == "release" ? display_request_t::action_t::release :
-                                display_request_t::action_t {};
+      fields[1] == "start-user" ? display_request_t::action_t::start_user :
+                                  display_request_t::action_t {};
     if (fields[1] != "acquire" && fields[1] != "activate" &&
-        fields[1] != "release") return std::nullopt;
+        fields[1] != "release" && fields[1] != "start-user") return std::nullopt;
     display_request_t request {
       action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
       static_cast<uid_t>(*account_uid)
@@ -628,6 +667,12 @@ namespace plank::session {
       return display_request_status::unavailable;
     }
     return display_request_status::submitted;
+  }
+
+  display_request_status request_user_session(uid_t account_uid) {
+    return request_display_transition({
+      display_request_t::action_t::start_user, {}, {}, {}, account_uid
+    });
   }
 
   display_request_status activate_display_lease(uid_t account_uid) {
