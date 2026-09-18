@@ -976,42 +976,6 @@ namespace {
     return status >= 0;
   }
 
-  bool gdm_switch_to_user(std::string_view username) {
-    if (username.empty() || username.find('\0') != std::string_view::npos) {
-      return false;
-    }
-    sd_bus *bus = nullptr;
-    if (sd_bus_open_system(&bus) < 0 || bus == nullptr) {
-      return false;
-    }
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    sd_bus_message *reply = nullptr;
-    const std::string account {username};
-    const int status = sd_bus_call_method(
-      bus,
-      "org.freedesktop.DisplayManager",
-      "/org/freedesktop/DisplayManager/Seat0",
-      "org.freedesktop.DisplayManager.Seat",
-      "SwitchToUser",
-      &error,
-      &reply,
-      "ss",
-      account.c_str(),
-      ""
-    );
-    if (status < 0) {
-      std::cerr << "DisplayManager SwitchToUser failed for " << account;
-      if (sd_bus_error_is_set(&error)) {
-        std::cerr << ": " << error.message;
-      }
-      std::cerr << '\n';
-    }
-    sd_bus_error_free(&error);
-    sd_bus_message_unref(reply);
-    sd_bus_unref(bus);
-    return status >= 0;
-  }
-
   bool start_authenticated_user_session(uid_t uid) {
     if (uid == 0) return false;
     const auto active = plank::session::active_seat0_graphical_session();
@@ -1026,12 +990,9 @@ namespace {
                 << " for UID " << uid << '\n';
       return activate_logind_session(existing->id);
     }
-    const auto account = account_for_uid(uid);
-    if (!account || account->name.empty()) {
-      return false;
-    }
-    std::clog << "Requesting GDM SwitchToUser for UID " << uid << '\n';
-    return gdm_switch_to_user(account->name);
+    std::clog << "Waiting for GDM to publish a user session after PAM for UID "
+              << uid << '\n';
+    return true;
   }
 
   void usage(const char *program) {

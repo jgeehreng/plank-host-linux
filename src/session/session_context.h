@@ -139,8 +139,10 @@ namespace plank::session {
   display_request_status request_display_transition(const display_request_t &request);
 
   /**
-   * After PAM succeeds at the GDM greeter, ask the supervisor to start or
-   * activate that account's graphical session. Does not replay a password.
+   * After PAM succeeds at the GDM greeter, start that account's graphical
+   * session. The worker completes GDM's UserVerifier with in-memory PAM
+   * secrets; this request only activates an existing seat0 desktop or waits
+   * for GDM to publish the new session.
    */
   display_request_status request_user_session(uid_t account_uid);
 
