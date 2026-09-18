@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -47,6 +48,17 @@ namespace plank::session {
     constexpr std::size_t maximum_secret = 256;
     constexpr std::size_t maximum_secrets = 4;
     constexpr auto gdm_timeout = std::chrono::seconds {20};
+    constexpr auto gdm_parent_wait = gdm_timeout + std::chrono::seconds {5};
+    enum class start_result : unsigned char {
+      ok = 1,
+      join_failed = 2,
+      open_session_failed = 3,
+      begin_failed = 4,
+      verify_timeout = 5,
+      verify_failed = 6,
+      start_failed = 7,
+      no_gdm_account = 8,
+    };
 
     /**
      * @brief Wipe secret strings.
@@ -170,7 +182,13 @@ namespace plank::session {
       if (initgroups(gdm_account.data(), ids.second) != 0) {
         return false;
       }
-      return setuid(ids.first) == 0 && geteuid() == ids.first;
+      if (setuid(ids.first) != 0 || geteuid() != ids.first) {
+        return false;
+      }
+      const auto runtime = "/run/user/" + std::to_string(ids.first);
+      return setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1) == 0 &&
+             setenv("XDG_SESSION_CLASS", "greeter", 1) == 0 &&
+             setenv("XDG_SESSION_TYPE", "x11", 1) == 0;
     }
 
     /**
@@ -330,12 +348,12 @@ namespace plank::session {
      *
      * @param username PAM account.
      * @param secrets PAM responses.
-     * @return True when StartSessionWhenReady succeeded.
+     * @return Which GDM step finished the conversation.
      */
-    bool verify_and_start(std::string_view username, std::vector<std::string> &secrets) {
+    start_result verify_and_start(std::string_view username, std::vector<std::string> &secrets) {
       sd_bus *bus = nullptr;
       if (!open_gdm_session(&bus) || bus == nullptr) {
-        return false;
+        return start_result::open_session_failed;
       }
       const std::unique_ptr<sd_bus, decltype(&sd_bus_unref)> hold {bus, &sd_bus_unref};
       verifier_state_t state {
@@ -345,17 +363,19 @@ namespace plank::session {
         false,
         false
       };
+      // Match every UserVerifier signal on this private bus. GDM 40 uses the
+      // session object path, but a path mismatch would wait out the timeout.
       if (sd_bus_match_signal(
             bus,
             nullptr,
             nullptr,
-            session_path.data(),
+            nullptr,
             verifier_interface.data(),
             nullptr,
             handle_verifier_signal,
             &state
           ) < 0) {
-        return false;
+        return start_result::open_session_failed;
       }
 
       sd_bus_error error = SD_BUS_ERROR_NULL;
@@ -379,7 +399,7 @@ namespace plank::session {
           std::fprintf(stderr, "GDM BeginVerificationForUser failed: %s\n", error.message);
         }
         sd_bus_error_free(&error);
-        return false;
+        return start_result::begin_failed;
       }
       sd_bus_error_free(&error);
 
@@ -397,17 +417,17 @@ namespace plank::session {
             nullptr,
             nullptr
           );
-          return false;
+          return start_result::verify_timeout;
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
         if (sd_bus_wait(bus, static_cast<uint64_t>(remaining.count())) < 0) {
-          return false;
+          return start_result::verify_failed;
         }
         while (sd_bus_process(bus, nullptr) > 0) {
         }
       }
       if (!state.complete) {
-        return false;
+        return start_result::verify_failed;
       }
 
       error = SD_BUS_ERROR_NULL;
@@ -429,7 +449,7 @@ namespace plank::session {
       }
       sd_bus_message_unref(reply);
       sd_bus_error_free(&error);
-      return status >= 0;
+      return status >= 0 ? start_result::ok : start_result::start_failed;
     }
 
     /**
@@ -438,9 +458,9 @@ namespace plank::session {
      * @param username PAM account.
      * @param secrets PAM responses.
      * @param greeter_session Active greeter logind session.
-     * @return Process exit status, zero on success.
+     * @return Encoded start_result for the parent log.
      */
-    int run_as_gdm(
+    unsigned char run_as_gdm(
       std::string username,
       std::vector<std::string> secrets,
       std::string greeter_session
@@ -448,16 +468,16 @@ namespace plank::session {
       const auto ids = gdm_account_ids();
       if (!ids) {
         wipe(secrets);
-        return 1;
+        return static_cast<unsigned char>(start_result::no_gdm_account);
       }
       if (!join_session_cgroup(greeter_session) || !become_gdm(*ids)) {
         wipe(secrets);
-        return 1;
+        return static_cast<unsigned char>(start_result::join_failed);
       }
-      const bool started = verify_and_start(username, secrets);
+      const auto started = verify_and_start(username, secrets);
       wipe(secrets);
       wipe_string(username);
-      return started ? 0 : 1;
+      return static_cast<unsigned char>(started);
     }
   }  // namespace
 
@@ -507,13 +527,12 @@ namespace plank::session {
     }
     if (child == 0) {
       close(status_pipe[0]);
-      const int code = run_as_gdm(std::string {username}, secrets, greeter->id);
+      const auto code = run_as_gdm(std::string {username}, secrets, greeter->id);
       wipe(secrets);
-      const unsigned char byte = code == 0 ? 1 : 0;
-      if (write(status_pipe[1], &byte, 1) != 1) {
+      if (write(status_pipe[1], &code, 1) != 1) {
         _exit(1);
       }
-      _exit(code);
+      _exit(code == static_cast<unsigned char>(start_result::ok) ? 0 : 1);
     }
     close(status_pipe[1]);
     pollfd poll_status {
@@ -521,7 +540,11 @@ namespace plank::session {
       POLLIN,
       0
     };
-    const int waited = poll(&poll_status, 1, static_cast<int>(std::chrono::milliseconds {gdm_timeout}.count()));
+    const int waited = poll(
+      &poll_status,
+      1,
+      static_cast<int>(std::chrono::milliseconds {gdm_parent_wait}.count())
+    );
     unsigned char byte = 0;
     const bool ready = waited > 0 && (poll_status.revents & POLLIN) != 0 &&
                        read(status_pipe[0], &byte, 1) == 1;
@@ -530,11 +553,37 @@ namespace plank::session {
       kill(child, SIGKILL);
     }
     waitpid(child, nullptr, 0);
-    if (ready && byte == 1) {
+    if (ready && byte == static_cast<unsigned char>(start_result::ok)) {
       BOOST_LOG(info) << "GDM accepted the authenticated user session"sv;
       return true;
     }
-    BOOST_LOG(warning) << "GDM did not start a user session after PAM"sv;
+    const auto step = ready ? static_cast<start_result>(byte) : start_result::verify_timeout;
+    switch (step) {
+    case start_result::join_failed:
+      BOOST_LOG(warning) << "GDM login helper could not join the greeter session after PAM"sv;
+      break;
+    case start_result::open_session_failed:
+      BOOST_LOG(warning) << "GDM OpenSession failed after PAM"sv;
+      break;
+    case start_result::begin_failed:
+      BOOST_LOG(warning) << "GDM BeginVerificationForUser failed after PAM"sv;
+      break;
+    case start_result::verify_timeout:
+      BOOST_LOG(warning) << "GDM UserVerifier timed out after PAM"sv;
+      break;
+    case start_result::verify_failed:
+      BOOST_LOG(warning) << "GDM UserVerifier rejected the conversation after PAM"sv;
+      break;
+    case start_result::start_failed:
+      BOOST_LOG(warning) << "GDM StartSessionWhenReady failed after PAM"sv;
+      break;
+    case start_result::no_gdm_account:
+      BOOST_LOG(warning) << "GDM greeter account is unavailable after PAM"sv;
+      break;
+    default:
+      BOOST_LOG(warning) << "GDM did not start a user session after PAM"sv;
+      break;
+    }
     return false;
   }
 }  // namespace plank::session
