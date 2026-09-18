@@ -132,16 +132,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(TARGETS plank-host-supervisor
             RUNTIME DESTINATION bin
             COMPONENT sunshine)
-
-    add_executable(plank-gdm-login
-            "${CMAKE_SOURCE_DIR}/src/session/gdm_login_helper.cpp"
-            "${CMAKE_SOURCE_DIR}/src/session/gdm_login.h")
-    target_link_libraries(plank-gdm-login PRIVATE ${PLANK_SYSTEMD_LIBRARY})
-    target_compile_options(plank-gdm-login PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
-    target_link_options(plank-gdm-login PRIVATE ${SUNSHINE_LINK_OPTIONS})
-    install(TARGETS plank-gdm-login
-            RUNTIME DESTINATION bin
-            COMPONENT sunshine)
 endif()
 
 # docs

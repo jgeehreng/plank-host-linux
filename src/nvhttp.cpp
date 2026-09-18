@@ -53,7 +53,6 @@
 #include "platform/common.h"
 #include "process.h"
 #include "session_stream.h"
-#include "session/gdm_login.h"
 #include "session/session_context.h"
 #include "plank_topology.h"
 #include "utility.h"
@@ -382,45 +381,6 @@ namespace nvhttp {
   }
 
   /**
-   * @brief After PAM succeeds at the greeter, start that account's desktop.
-   *
-   * @param step Completed PAM result.
-   * @param peer TLS peer bound to the conversation.
-   * @param secrets In-memory PAM responses used once for GDM, then wiped.
-   */
-  void maybe_start_user_session_after_pam(
-    const plank::auth::web_auth_step_t &step,
-    std::string_view peer,
-    std::vector<std::string> &secrets
-  ) {
-    using state_e = plank::auth::step_t::state_e;
-    if (step.state != state_e::authenticated || step.session_token.empty() || !web_auth) {
-      return;
-    }
-    if (plank::session::confirmed_desktop_stage() != "greeter") {
-      return;
-    }
-    const auto identity = web_auth->identity(step.session_token, peer);
-    const auto uid = identity ? plank::auth::account_uid(*identity) : std::nullopt;
-    if (!uid || !identity) {
-      return;
-    }
-    if (!plank::session::local_user_x11_session(*uid) &&
-        !plank::session::complete_gdm_login(*identity, secrets)) {
-      BOOST_LOG(warning) << "Unable to start a graphical session after PAM; the greeter remains"sv;
-      return;
-    }
-    const auto status = plank::session::request_user_session(*uid);
-    if (status == plank::session::display_request_status::submitted) {
-      BOOST_LOG(info) << "Requested a graphical session for the authenticated account after PAM"sv;
-    } else if (status == plank::session::display_request_status::wrong_user) {
-      BOOST_LOG(warning) << "Refusing to start a graphical session for an account that does not own the desktop"sv;
-    } else {
-      BOOST_LOG(warning) << "Unable to start a graphical session after PAM; the greeter remains"sv;
-    }
-  }
-
-  /**
    * @brief Read a bounded JSON request body without logging it.
    *
    * @param request HTTPS request.
@@ -462,10 +422,7 @@ namespace nvhttp {
       return;
     }
     const auto username = body["username"].get<std::string>();
-    const auto peer = authentication_peer(request);
-    const auto step = web_auth->begin(username, peer);
-    std::vector<std::string> secrets;
-    maybe_start_user_session_after_pam(step, peer, secrets);
+    const auto step = web_auth->begin(username, authentication_peer(request));
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 
@@ -501,15 +458,8 @@ namespace nvhttp {
       }
     }
     const auto conversation_id = body["conversation_id"].get<std::string>();
-    const auto peer = authentication_peer(request);
-    std::vector<std::string> secrets = responses;
-    const auto step = web_auth->respond(conversation_id, peer, std::move(responses));
-    maybe_start_user_session_after_pam(step, peer, secrets);
-    for (auto &secret : secrets) {
-      if (!secret.empty()) {
-        explicit_bzero(secret.data(), secret.size());
-      }
-    }
+    const auto step = web_auth->respond(conversation_id, authentication_peer(request),
+                                        std::move(responses));
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 
@@ -1446,17 +1396,6 @@ namespace nvhttp {
       return;
     }
 
-    if (plank::session::confirmed_desktop_stage() == "greeter") {
-      // PAM can start GDM's user session, but the greeter X display is not the
-      // authenticated desktop. Return the existing transition status so the
-      // Client waits and relaunches after the media worker attaches to it.
-      BOOST_LOG(info) << "Deferring launch until GDM publishes the authenticated desktop"sv;
-      tree.put("root.gamesession", 0);
-      tree.put("root.<xmlattr>.status_code", 425);
-      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
-      return;
-    }
-
     if (!proc::is_desktop_app((int) appid)) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -1619,14 +1558,6 @@ namespace nvhttp {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
-      return;
-    }
-
-    if (plank::session::confirmed_desktop_stage() == "greeter") {
-      BOOST_LOG(info) << "Deferring resume until GDM publishes the authenticated desktop"sv;
-      tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 425);
-      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
       return;
     }
 

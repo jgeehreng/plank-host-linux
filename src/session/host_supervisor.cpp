@@ -27,7 +27,6 @@
 
 #include <poll.h>
 #include <pwd.h>
-#include <systemd/sd-bus.h>
 #include <systemd/sd-login.h>
 #include <linux/capability.h>
 #include <sys/prctl.h>
@@ -941,60 +940,6 @@ namespace {
     return prepared && started;
   }
 
-  bool activate_logind_session(std::string_view session_id) {
-    if (session_id.empty() || session_id.find('\0') != std::string_view::npos) {
-      return false;
-    }
-    sd_bus *bus = nullptr;
-    if (sd_bus_open_system(&bus) < 0 || bus == nullptr) {
-      return false;
-    }
-    sd_bus_error error = SD_BUS_ERROR_NULL;
-    sd_bus_message *reply = nullptr;
-    const std::string id {session_id};
-    const int status = sd_bus_call_method(
-      bus,
-      "org.freedesktop.login1",
-      "/org/freedesktop/login1",
-      "org.freedesktop.login1.Manager",
-      "ActivateSession",
-      &error,
-      &reply,
-      "s",
-      id.c_str()
-    );
-    if (status < 0) {
-      std::cerr << "logind ActivateSession failed for session " << id;
-      if (sd_bus_error_is_set(&error)) {
-        std::cerr << ": " << error.message;
-      }
-      std::cerr << '\n';
-    }
-    sd_bus_error_free(&error);
-    sd_bus_message_unref(reply);
-    sd_bus_unref(bus);
-    return status >= 0;
-  }
-
-  bool start_authenticated_user_session(uid_t uid) {
-    if (uid == 0) return false;
-    const auto active = plank::session::active_seat0_graphical_session();
-    if (active && active->session_class == "user") {
-      return active->uid == uid;
-    }
-    if (!active || active->session_class != "greeter") {
-      return false;
-    }
-    if (const auto existing = plank::session::local_user_x11_session(uid)) {
-      std::clog << "Activating existing graphical session " << existing->id
-                << " for UID " << uid << '\n';
-      return activate_logind_session(existing->id);
-    }
-    std::clog << "Waiting for GDM to publish a user session after PAM for UID "
-              << uid << '\n';
-    return true;
-  }
-
   void usage(const char *program) {
     std::cerr << "usage: " << program << " [--worker ABSOLUTE_PATH]\n";
   }
@@ -1315,21 +1260,6 @@ int main(int argc, char **argv) {
               std::cerr << "Released a temporary display lease after its X server disappeared\n";
             }
             physical_display_lease.reset();
-          }
-        } else if (request->action ==
-                     plank::session::display_request_t::action_t::start_user) {
-          if (active->session_class == "user" &&
-              active->uid == request->account_uid) {
-            std::clog << "Authenticated account already owns the active graphical session\n";
-          } else if (active->session_class == "greeter") {
-            if (start_authenticated_user_session(request->account_uid)) {
-              std::clog << "Requested a graphical session for UID "
-                        << request->account_uid << " after PAM\n";
-            } else {
-              std::cerr << "Unable to start a graphical session after PAM; leaving the greeter in place\n";
-            }
-          } else {
-            std::cerr << "Refused user-session start outside the GDM greeter\n";
           }
         } else if (!pending_display_request) {
           pending_display_request = *request;
