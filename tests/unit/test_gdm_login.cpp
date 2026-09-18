@@ -31,7 +31,7 @@ TEST(GdmLogin, RejectsEmptySecretsWithoutTalkingToGdm) {
 
 TEST(GdmLogin, FailsClosedWithoutRoot) {
   if (geteuid() == 0) {
-    GTEST_SKIP() << "complete_gdm_login talks to GDM when running as root";
+    GTEST_SKIP() << "complete_gdm_login talks to the GDM helper when running as root";
   }
   std::vector<std::string> secrets {"x"};
   EXPECT_FALSE(session::complete_gdm_login("artist", secrets));
