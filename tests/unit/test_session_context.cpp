@@ -126,6 +126,7 @@ TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
   for (const auto action : {
          session::display_request_t::action_t::activate,
          session::display_request_t::action_t::release,
+         session::display_request_t::action_t::start_user,
        }) {
     const session::display_request_t control {action, {}, {}, {}, 1000};
     const auto parsed = session::parse_display_request(
@@ -157,6 +158,10 @@ TEST(SessionContext, RejectsMalformedDisplayRequests) {
   EXPECT_TRUE(session::display_request_message(
     {session::display_request_t::action_t::acquire,
      "single", "2560x1600", {}, 0}
+  ).empty());
+  EXPECT_TRUE(session::display_request_message(
+    {session::display_request_t::action_t::start_user,
+     "single", {}, {}, 1000}
   ).empty());
   auto truncated = session::display_request_message(
     {session::display_request_t::action_t::acquire,
