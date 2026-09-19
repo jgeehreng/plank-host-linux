@@ -452,6 +452,7 @@ namespace plank::session {
       request.action == display_request_t::action_t::activate ? "activate" :
       request.action == display_request_t::action_t::release ? "release" :
       request.action == display_request_t::action_t::start_user ? "start-user" :
+      request.action == display_request_t::action_t::logout ? "logout" :
                                                                   std::string_view {};
     const bool acquire_valid = request.action != display_request_t::action_t::acquire ||
       ((request.layout == "single" || request.layout == "dual-horizontal") &&
@@ -461,7 +462,8 @@ namespace plank::session {
     const bool control_valid = request.action == display_request_t::action_t::acquire ||
       ((request.action == display_request_t::action_t::activate ||
         request.action == display_request_t::action_t::release ||
-        request.action == display_request_t::action_t::start_user) &&
+        request.action == display_request_t::action_t::start_user ||
+        request.action == display_request_t::action_t::logout) &&
        request.layout.empty() && request.mode_1.empty() && request.mode_2.empty());
     if (action.empty() || !acquire_valid || !control_valid || request.account_uid == 0) {
       return {};
@@ -498,9 +500,11 @@ namespace plank::session {
       fields[1] == "activate" ? display_request_t::action_t::activate :
       fields[1] == "release" ? display_request_t::action_t::release :
       fields[1] == "start-user" ? display_request_t::action_t::start_user :
+      fields[1] == "logout" ? display_request_t::action_t::logout :
                                   display_request_t::action_t {};
     if (fields[1] != "acquire" && fields[1] != "activate" &&
-        fields[1] != "release" && fields[1] != "start-user") return std::nullopt;
+        fields[1] != "release" && fields[1] != "start-user" &&
+        fields[1] != "logout") return std::nullopt;
     display_request_t request {
       action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
       static_cast<uid_t>(*account_uid)
@@ -656,6 +660,11 @@ namespace plank::session {
     if (active->session_class == "user" && active->uid != request.account_uid) {
       return display_request_status::wrong_user;
     }
+    if (request.action == display_request_t::action_t::logout &&
+        (active->session_class != "user" || active->uid != request.account_uid ||
+         attestation->session.session_class != "user")) {
+      return display_request_status::unavailable;
+    }
     if (active->session_class != "greeter" && active->session_class != "user") {
       return display_request_status::unavailable;
     }
@@ -672,6 +681,24 @@ namespace plank::session {
   display_request_status request_user_session(uid_t account_uid) {
     return request_display_transition({
       display_request_t::action_t::start_user, {}, {}, {}, account_uid
+    });
+  }
+
+  display_request_status request_user_logout() {
+    if (confirmed_desktop_stage() != "user") {
+      return display_request_status::unavailable;
+    }
+    std::optional<update_t> attestation;
+    {
+      std::lock_guard lock {current_update_mutex};
+      attestation = current_update;
+    }
+    if (!attestation || attestation->session.session_class != "user" ||
+        attestation->session.uid == 0) {
+      return display_request_status::unavailable;
+    }
+    return request_display_transition({
+      display_request_t::action_t::logout, {}, {}, {}, attestation->session.uid
     });
   }
 

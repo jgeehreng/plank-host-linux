@@ -127,6 +127,7 @@ TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
          session::display_request_t::action_t::activate,
          session::display_request_t::action_t::release,
          session::display_request_t::action_t::start_user,
+         session::display_request_t::action_t::logout,
        }) {
     const session::display_request_t control {action, {}, {}, {}, 1000};
     const auto parsed = session::parse_display_request(
@@ -161,6 +162,10 @@ TEST(SessionContext, RejectsMalformedDisplayRequests) {
   ).empty());
   EXPECT_TRUE(session::display_request_message(
     {session::display_request_t::action_t::start_user,
+     "single", {}, {}, 1000}
+  ).empty());
+  EXPECT_TRUE(session::display_request_message(
+    {session::display_request_t::action_t::logout,
      "single", {}, {}, 1000}
   ).empty());
   auto truncated = session::display_request_message(

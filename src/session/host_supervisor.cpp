@@ -976,6 +976,41 @@ namespace {
     return status >= 0;
   }
 
+  bool terminate_logind_session(std::string_view session_id) {
+    if (session_id.empty() || session_id.find('\0') != std::string_view::npos) {
+      return false;
+    }
+    sd_bus *bus = nullptr;
+    if (sd_bus_open_system(&bus) < 0 || bus == nullptr) {
+      return false;
+    }
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = nullptr;
+    const std::string id {session_id};
+    const int status = sd_bus_call_method(
+      bus,
+      "org.freedesktop.login1",
+      "/org/freedesktop/login1",
+      "org.freedesktop.login1.Manager",
+      "TerminateSession",
+      &error,
+      &reply,
+      "s",
+      id.c_str()
+    );
+    if (status < 0) {
+      std::cerr << "logind TerminateSession failed for session " << id;
+      if (sd_bus_error_is_set(&error)) {
+        std::cerr << ": " << error.message;
+      }
+      std::cerr << '\n';
+    }
+    sd_bus_error_free(&error);
+    sd_bus_message_unref(reply);
+    sd_bus_unref(bus);
+    return status >= 0;
+  }
+
   bool start_authenticated_user_session(uid_t uid) {
     if (uid == 0) return false;
     const auto active = plank::session::active_seat0_graphical_session();
@@ -1330,6 +1365,18 @@ int main(int argc, char **argv) {
             }
           } else {
             std::cerr << "Refused user-session start outside the GDM greeter\n";
+          }
+        } else if (request->action ==
+                     plank::session::display_request_t::action_t::logout) {
+          if (active->session_class == "user" &&
+              active->uid == request->account_uid) {
+            if (terminate_logind_session(active->id)) {
+              std::clog << "Returned seat0 to GDM after the last PLANK stream ended\n";
+            } else {
+              std::cerr << "Unable to terminate the authenticated desktop after the last stream ended\n";
+            }
+          } else {
+            std::cerr << "Refused logout outside the authenticated user desktop\n";
           }
         } else if (!pending_display_request) {
           pending_display_request = *request;

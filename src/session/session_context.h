@@ -49,6 +49,7 @@ namespace plank::session {
       activate,
       release,
       start_user,
+      logout,
     } action {action_t::acquire};
     std::string layout;
     std::string mode_1;
@@ -145,6 +146,12 @@ namespace plank::session {
    * for GDM to publish the new session.
    */
   display_request_status request_user_session(uid_t account_uid);
+
+  /**
+   * After the last stream on an attached user desktop ends, return seat0 to
+   * GDM. Greeter workers, handoff, and same-user takeover must not call this.
+   */
+  display_request_status request_user_logout();
 
   /** Mark a temporary physical-display lease active once native setup allocates its stream. */
   display_request_status activate_display_lease(uid_t account_uid);
