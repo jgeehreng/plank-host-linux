@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 // lib includes
@@ -381,20 +382,64 @@ namespace nvhttp {
     return body;
   }
 
+  std::mutex start_desktop_mutex;
+  std::unordered_map<std::string, bool> start_desktop_by_conversation;
+
+  /**
+   * @brief Read the optional start_desktop flag; omitted values default on.
+   */
+  std::optional<bool> read_start_desktop(const nlohmann::json &body) {
+    if (!body.contains("start_desktop")) {
+      return true;
+    }
+    if (!body["start_desktop"].is_boolean()) {
+      return std::nullopt;
+    }
+    return body["start_desktop"].get<bool>();
+  }
+
+  void remember_start_desktop(const std::string &conversation_id, bool start_desktop) {
+    if (conversation_id.empty()) {
+      return;
+    }
+    std::lock_guard lock {start_desktop_mutex};
+    if (start_desktop_by_conversation.size() >= 32) {
+      start_desktop_by_conversation.clear();
+    }
+    start_desktop_by_conversation[conversation_id] = start_desktop;
+  }
+
+  bool take_start_desktop(const std::string &conversation_id, bool fallback) {
+    std::lock_guard lock {start_desktop_mutex};
+    const auto found = start_desktop_by_conversation.find(conversation_id);
+    if (found == start_desktop_by_conversation.end()) {
+      return fallback;
+    }
+    const bool start_desktop = found->second;
+    start_desktop_by_conversation.erase(found);
+    return start_desktop;
+  }
+
   /**
    * @brief After PAM succeeds at the greeter, start that account's desktop.
    *
    * @param step Completed PAM result.
    * @param peer TLS peer bound to the conversation.
    * @param secrets In-memory PAM responses used once for GDM, then wiped.
+   * @param start_desktop False for logout reconnect; PAM must not skip-GDM.
    */
   void maybe_start_user_session_after_pam(
     const plank::auth::web_auth_step_t &step,
     std::string_view peer,
-    std::vector<std::string> &secrets
+    std::vector<std::string> &secrets,
+    bool start_desktop
   ) {
     using state_e = plank::auth::step_t::state_e;
     if (step.state != state_e::authenticated || step.session_token.empty() || !web_auth) {
+      return;
+    }
+    if (!start_desktop) {
+      BOOST_LOG(info) << "PAM succeeded without starting a desktop; leaving the sign-in screen in place"sv;
       return;
     }
     if (plank::session::confirmed_desktop_stage() != "greeter") {
@@ -462,10 +507,17 @@ namespace nvhttp {
       return;
     }
     const auto username = body["username"].get<std::string>();
+    const auto start_desktop = read_start_desktop(body);
+    if (!start_desktop) {
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                      {{"state", "invalid-request"}});
+      return;
+    }
     const auto peer = authentication_peer(request);
     const auto step = web_auth->begin(username, peer);
+    remember_start_desktop(step.conversation_id, *start_desktop);
     std::vector<std::string> secrets;
-    maybe_start_user_session_after_pam(step, peer, secrets);
+    maybe_start_user_session_after_pam(step, peer, secrets, *start_desktop);
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 
@@ -501,10 +553,25 @@ namespace nvhttp {
       }
     }
     const auto conversation_id = body["conversation_id"].get<std::string>();
+    const auto start_desktop = body.contains("start_desktop") ?
+      read_start_desktop(body) :
+      std::optional<bool> {take_start_desktop(conversation_id, true)};
+    if (!start_desktop) {
+      for (auto &value : responses) {
+        explicit_bzero(value.data(), value.size());
+      }
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                      {{"state", "invalid-request"}});
+      return;
+    }
+    if (body.contains("start_desktop")) {
+      take_start_desktop(conversation_id, *start_desktop);
+    }
     const auto peer = authentication_peer(request);
     std::vector<std::string> secrets = responses;
     const auto step = web_auth->respond(conversation_id, peer, std::move(responses));
-    maybe_start_user_session_after_pam(step, peer, secrets);
+    remember_start_desktop(step.conversation_id, *start_desktop);
+    maybe_start_user_session_after_pam(step, peer, secrets, *start_desktop);
     for (auto &secret : secrets) {
       if (!secret.empty()) {
         explicit_bzero(secret.data(), secret.size());

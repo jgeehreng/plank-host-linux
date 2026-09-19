@@ -71,6 +71,7 @@ namespace {
     std::uint64_t generation {};
     int pam_descriptor {-1};  ///< Private descriptor-only broker delegation endpoint.
     bool greeter {false};
+    uid_t uid {};
   };
 
   struct physical_output_t {
@@ -310,6 +311,7 @@ namespace {
     worker.session_id = session.id;
     worker.generation = update.generation;
     worker.greeter = session.session_class == "greeter";
+    worker.uid = session.uid;
     return true;
   }
 
@@ -1322,6 +1324,28 @@ int main(int argc, char **argv) {
         const auto active = plank::session::active_seat0_graphical_session();
         if (!request) {
           std::cerr << "Rejected malformed PLANK display transition request\n";
+        } else if (request->action ==
+                     plank::session::display_request_t::action_t::logout) {
+          if (worker.greeter || worker.uid == 0 ||
+              worker.uid != request->account_uid) {
+            std::cerr << "Refused logout from a worker that is not attached to that desktop\n";
+          } else {
+            const auto existing =
+              plank::session::local_user_x11_session(request->account_uid);
+            const std::string session_id = existing ? existing->id :
+              (active && active->session_class == "user" &&
+               active->uid == request->account_uid ?
+                 active->id :
+                 std::string {});
+            if (session_id.empty()) {
+              std::clog << "Logout found no local user session for UID "
+                        << request->account_uid << "; seat0 is already at GDM\n";
+            } else if (terminate_logind_session(session_id)) {
+              std::clog << "Returned seat0 to GDM so the next account can sign in\n";
+            } else {
+              std::cerr << "Unable to terminate the authenticated desktop after logout\n";
+            }
+          }
         } else if (!active || active->id != worker.session_id ||
                    (active->session_class == "user" &&
                     active->uid != request->account_uid) ||
@@ -1365,18 +1389,6 @@ int main(int argc, char **argv) {
             }
           } else {
             std::cerr << "Refused user-session start outside the GDM greeter\n";
-          }
-        } else if (request->action ==
-                     plank::session::display_request_t::action_t::logout) {
-          if (active->session_class == "user" &&
-              active->uid == request->account_uid) {
-            if (terminate_logind_session(active->id)) {
-              std::clog << "Returned seat0 to GDM after the last PLANK stream ended\n";
-            } else {
-              std::cerr << "Unable to terminate the authenticated desktop after the last stream ended\n";
-            }
-          } else {
-            std::cerr << "Refused logout outside the authenticated user desktop\n";
           }
         } else if (!pending_display_request) {
           pending_display_request = *request;

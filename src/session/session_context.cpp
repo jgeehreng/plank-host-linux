@@ -652,21 +652,24 @@ namespace plank::session {
       attestation = current_update;
     }
     if (!attestation) return display_request_status::unavailable;
-    const auto active = active_seat0_graphical_session();
-    if (!active || active->id != attestation->session.id ||
-        active->uid != attestation->session.uid) {
-      return display_request_status::unavailable;
-    }
-    if (active->session_class == "user" && active->uid != request.account_uid) {
-      return display_request_status::wrong_user;
-    }
-    if (request.action == display_request_t::action_t::logout &&
-        (active->session_class != "user" || active->uid != request.account_uid ||
-         attestation->session.session_class != "user")) {
-      return display_request_status::unavailable;
-    }
-    if (active->session_class != "greeter" && active->session_class != "user") {
-      return display_request_status::unavailable;
+    if (request.action == display_request_t::action_t::logout) {
+      if (attestation->session.session_class != "user" ||
+          attestation->session.uid == 0 ||
+          attestation->session.uid != request.account_uid) {
+        return display_request_status::unavailable;
+      }
+    } else {
+      const auto active = active_seat0_graphical_session();
+      if (!active || active->id != attestation->session.id ||
+          active->uid != attestation->session.uid) {
+        return display_request_status::unavailable;
+      }
+      if (active->session_class == "user" && active->uid != request.account_uid) {
+        return display_request_status::wrong_user;
+      }
+      if (active->session_class != "greeter" && active->session_class != "user") {
+        return display_request_status::unavailable;
+      }
     }
 
     std::lock_guard lock {supervisor_descriptor_mutex};
@@ -685,9 +688,6 @@ namespace plank::session {
   }
 
   display_request_status request_user_logout() {
-    if (confirmed_desktop_stage() != "user") {
-      return display_request_status::unavailable;
-    }
     std::optional<update_t> attestation;
     {
       std::lock_guard lock {current_update_mutex};
