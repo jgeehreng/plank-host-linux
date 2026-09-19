@@ -148,11 +148,10 @@ namespace plank::session {
   display_request_status request_user_session(uid_t account_uid);
 
   /**
-   * After the last stream on an attached user desktop ends, return seat0 to
-   * GDM so the next account can sign in. Greeter workers, handoff, and
-   * same-user takeover must not call this. The worker may already be
-   * detaching from a dying X server; the supervisor terminates that UID's
-   * remaining local user session.
+   * Return seat0 to GDM for an attached user desktop. Plank Disconnect and
+   * quit must not call this; only an explicit workstation logout should.
+   * The worker may already be detaching from a dying X server; the
+   * supervisor terminates that UID's remaining local user session.
    */
   display_request_status request_user_logout();
 

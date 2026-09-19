@@ -1341,7 +1341,7 @@ int main(int argc, char **argv) {
               std::clog << "Logout found no local user session for UID "
                         << request->account_uid << "; seat0 is already at GDM\n";
             } else if (terminate_logind_session(session_id)) {
-              std::clog << "Returned seat0 to GDM so the next account can sign in\n";
+              std::clog << "Returned seat0 to GDM after an explicit workstation logout\n";
             } else {
               std::cerr << "Unable to terminate the authenticated desktop after logout\n";
             }

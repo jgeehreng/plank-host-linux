@@ -1359,16 +1359,8 @@ namespace stream {
             BOOST_LOG(error) << "Unable to submit the temporary PLANK display-lease release"sv;
           }
         }
-        if (!session.keep_desktop_on_end) {
-          const auto logout = plank::session::request_user_logout();
-          if (logout == plank::session::display_request_status::submitted) {
-            BOOST_LOG(info) << "Requested GDM logout after the last stream ended"sv;
-          } else if (logout == plank::session::display_request_status::unavailable) {
-            BOOST_LOG(debug) << "Last stream ended without an attached user desktop to log out"sv;
-          } else {
-            BOOST_LOG(warning) << "Unable to return seat0 to GDM after the last stream ended"sv;
-          }
-        }
+        // Disconnect and quit leave the owner desktop running. GNOME Logout
+        // returns seat0 to GDM; the Client then shows the sign-in UI.
       }
 
       BOOST_LOG(debug) << "Session ended"sv;
