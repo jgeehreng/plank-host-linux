@@ -1423,6 +1423,13 @@ namespace nvhttp {
     tree.put("root.PairStatus", authorization_status);
     tree.put("root.currentgame", current_appid);
     tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
+    // Nameless occupancy for the Client bookmark row. Do not include a
+    // username, UID, or session id. Unauthenticated polls may learn only
+    // whether a user desktop or live stream currently owns the Host.
+    const bool occupied =
+      plank::session::confirmed_desktop_stage() == "user" ||
+      session_stream::session_count() > 0;
+    tree.put("root.PlankOccupied", occupied ? 1 : 0);
 
     std::ostringstream data;
 
