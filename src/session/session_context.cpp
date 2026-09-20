@@ -325,7 +325,8 @@ namespace plank::session {
 
   std::optional<descriptor_t> seat0_greeter_session() {
     char **raw = nullptr;
-    const int count = sd_seat_get_sessions("seat0", &raw);
+    // Rocky 9 systemd 252 requires the UID out-params; they may be null.
+    const int count = sd_seat_get_sessions("seat0", &raw, nullptr, nullptr);
     if (count <= 0 || raw == nullptr) {
       if (raw != nullptr) {
         for (char **session = raw; *session != nullptr; ++session) {
