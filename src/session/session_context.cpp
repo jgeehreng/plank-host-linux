@@ -323,6 +323,37 @@ namespace plank::session {
     return result;
   }
 
+  std::optional<descriptor_t> seat0_greeter_session() {
+    char **raw = nullptr;
+    const int count = sd_seat_get_sessions("seat0", &raw);
+    if (count <= 0 || raw == nullptr) {
+      if (raw != nullptr) {
+        for (char **session = raw; *session != nullptr; ++session) {
+          free(*session);
+        }
+        free(raw);
+      }
+      return std::nullopt;
+    }
+    std::optional<descriptor_t> found;
+    for (int index = 0; raw[index] != nullptr; ++index) {
+      auto candidate = describe(raw[index]);
+      free(raw[index]);
+      if (!candidate || candidate->remote || candidate->seat != "seat0" ||
+          candidate->type != "x11" || candidate->session_class != "greeter") {
+        continue;
+      }
+      if (candidate->state != "active" && candidate->state != "online") {
+        continue;
+      }
+      if (!found || (!found->active && candidate->active)) {
+        found = std::move(candidate);
+      }
+    }
+    free(raw);
+    return found;
+  }
+
   std::optional<descriptor_t> local_user_x11_session(uid_t account_uid) {
     if (account_uid == 0) return std::nullopt;
     char **raw = nullptr;

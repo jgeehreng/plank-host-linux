@@ -98,6 +98,12 @@ namespace plank::session {
   std::optional<descriptor_t> active_seat0_graphical_session();
 
   /**
+   * Find the local seat0 X11 GDM greeter, including an online session that
+   * logind has not yet marked active after a user logout.
+   */
+  std::optional<descriptor_t> seat0_greeter_session();
+
+  /**
    * Find a local seat0 X11 user session for an account, including an inactive
    * session that logind can activate. Greeter and lock-screen sessions are
    * ignored.

@@ -1183,6 +1183,10 @@ int main(int argc, char **argv) {
     const auto selected = plank::session::active_seat0_graphical_session();
     if (!selected) {
       pending_session.clear();
+      if (const auto greeter = plank::session::seat0_greeter_session();
+          greeter && !greeter->active) {
+        activate_logind_session(greeter->id);
+      }
     } else if ((worker.pid <= 0 || worker.session_id != selected->id) &&
                std::chrono::steady_clock::now() >= next_launch) {
       const auto environment = plank::session::discover_environment(*selected);
@@ -1342,6 +1346,14 @@ int main(int argc, char **argv) {
                         << request->account_uid << "; seat0 is already at GDM\n";
             } else if (terminate_logind_session(session_id)) {
               std::clog << "Returned seat0 to GDM after an explicit workstation logout\n";
+              if (const auto greeter = plank::session::seat0_greeter_session()) {
+                if (activate_logind_session(greeter->id)) {
+                  std::clog << "Activated GDM session " << greeter->id
+                            << " after logout\n";
+                } else {
+                  std::cerr << "Unable to activate the GDM greeter after logout\n";
+                }
+              }
             } else {
               std::cerr << "Unable to terminate the authenticated desktop after logout\n";
             }
