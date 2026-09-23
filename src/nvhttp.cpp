@@ -618,30 +618,70 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Verify that a request's PAM account owns this user-service process.
+   * @brief Decide whether a PAM account may launch while seat0 is changing.
    *
-   * @param request Authorized HTTPS request.
-   * @return True when the authenticated account UID matches the active desktop.
+   * A desktop that belongs to someone else cancels the login. A seat that has
+   * not caught up to the worker keeps the login and waits.
    */
-  std::optional<uid_t> authenticated_account_uid_for_desktop(
-    const req_https_t &request
-  ) {
+  struct desktop_account_decision_t {
+    enum class action_e {
+      proceed,
+      wait,
+      reject,
+    } action {action_e::reject};
+    std::optional<uid_t> uid;
+  };
+
+  desktop_account_decision_t decide_desktop_account(const req_https_t &request) {
+    desktop_account_decision_t decision;
     if (!web_auth) {
-      return std::nullopt;
+      return decision;
     }
     const auto token = bearer_token(request);
     const auto identity = web_auth->identity(token, authentication_peer(request));
     if (!identity) {
-      return std::nullopt;
+      return decision;
     }
     const auto uid = plank::auth::account_uid(*identity);
-    if (!uid ||
-        !plank::session::supervisor_attests_account_for_active_seat0(*uid)) {
+    if (!uid) {
       web_auth->cancel(token);
       BOOST_LOG(warning) << "Rejecting PLANK stream for an account that is not authorized for the active desktop"sv;
-      return std::nullopt;
+      return decision;
     }
-    return uid;
+    switch (plank::session::supervisor_desktop_account_access(*uid)) {
+      case plank::session::desktop_account_access_e::allowed:
+        decision.action = desktop_account_decision_t::action_e::proceed;
+        decision.uid = uid;
+        return decision;
+      case plank::session::desktop_account_access_e::pending:
+        decision.action = desktop_account_decision_t::action_e::wait;
+        BOOST_LOG(info) << "Deferring the stream until the authenticated desktop is attached"sv;
+        return decision;
+      case plank::session::desktop_account_access_e::wrong_account:
+        web_auth->cancel(token);
+        BOOST_LOG(warning) << "Rejecting PLANK stream for an account that is not authorized for the active desktop"sv;
+        return decision;
+    }
+    return decision;
+  }
+
+  bool finish_desktop_account_decision(
+    pt::ptree &tree,
+    const desktop_account_decision_t &decision,
+    const char *session_field
+  ) {
+    if (decision.action == desktop_account_decision_t::action_e::proceed) {
+      return false;
+    }
+    tree.put(std::string {"root."} + session_field, 0);
+    if (decision.action == desktop_account_decision_t::action_e::wait) {
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
+      return true;
+    }
+    tree.put("root.<xmlattr>.status_code", 403);
+    tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+    return true;
   }
 
   /**
@@ -1512,13 +1552,11 @@ namespace nvhttp {
 
     auto appid = util::from_view(get_arg(args, "appid"));
 
-    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
-    if (!authenticated_uid) {
-      tree.put("root.gamesession", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+    const auto desktop_account = decide_desktop_account(request);
+    if (finish_desktop_account_decision(tree, desktop_account, "gamesession")) {
       return;
     }
+    const auto &authenticated_uid = desktop_account.uid;
 
     if (plank::session::confirmed_desktop_stage() == "greeter") {
       // PAM can start GDM's user session, but the greeter X display is not the
@@ -1688,13 +1726,11 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
-    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
-    if (!authenticated_uid) {
-      tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+    const auto desktop_account = decide_desktop_account(request);
+    if (finish_desktop_account_decision(tree, desktop_account, "resume")) {
       return;
     }
+    const auto &authenticated_uid = desktop_account.uid;
 
     if (plank::session::confirmed_desktop_stage() == "greeter") {
       BOOST_LOG(info) << "Deferring resume until GDM publishes the authenticated desktop"sv;

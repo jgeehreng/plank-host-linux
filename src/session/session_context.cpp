@@ -267,12 +267,6 @@ namespace plank::session {
     };
   }  // namespace
 
-  bool eligible_graphical_session(const descriptor_t &session) {
-    return session.active && !session.remote && session.seat == "seat0" &&
-           session.type == "x11" && session.state == "active" &&
-           (session.session_class == "user" || session.session_class == "greeter");
-  }
-
   std::string_view desktop_stage(const descriptor_t &attached, const descriptor_t &active) {
     if (!eligible_graphical_session(active) || attached.id != active.id ||
         attached.uid != active.uid || attached.session_class != active.session_class) {
@@ -774,18 +768,20 @@ namespace plank::session {
       *descriptor, std::move(on_reattach), std::move(on_desktop_handoff));
   }
 
-  bool supervisor_attests_account_for_active_seat0(uid_t account_uid) {
-    if (geteuid() != 0 || account_uid == 0) return false;
-    std::optional<update_t> attestation;
+  desktop_account_access_e supervisor_desktop_account_access(uid_t account_uid) {
+    std::optional<descriptor_t> attested;
     {
       std::lock_guard lock {current_update_mutex};
-      attestation = current_update;
+      if (current_update) attested = current_update->session;
     }
-    if (!attestation) return false;
-    const auto active = active_seat0_graphical_session();
-    if (!active || active->id != attestation->session.id ||
-        active->uid != attestation->session.uid) return false;
-    return active->session_class == "greeter" || active->uid == account_uid;
+    return desktop_account_access(
+      account_uid, geteuid() == 0, attested, active_seat0_graphical_session()
+    );
+  }
+
+  bool supervisor_attests_account_for_active_seat0(uid_t account_uid) {
+    return supervisor_desktop_account_access(account_uid) ==
+           desktop_account_access_e::allowed;
   }
 
   std::uint64_t desktop_generation() {

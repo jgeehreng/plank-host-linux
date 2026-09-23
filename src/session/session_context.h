@@ -83,7 +83,40 @@ namespace plank::session {
   };
 
   /** Return true only for a supported, local active seat0 session. */
-  bool eligible_graphical_session(const descriptor_t &session);
+  inline bool eligible_graphical_session(const descriptor_t &session) {
+    return session.active && !session.remote && session.seat == "seat0" &&
+           session.type == "x11" && session.state == "active" &&
+           (session.session_class == "user" || session.session_class == "greeter");
+  }
+
+  /**
+   * Decide whether an authenticated account may use the active desktop.
+   * A seat that has not caught up to the worker is pending, not a rejection.
+   */
+  enum class desktop_account_access_e {
+    allowed,
+    wrong_account,
+    pending,
+  };
+
+  inline desktop_account_access_e desktop_account_access(
+    uid_t account_uid,
+    bool worker_is_root,
+    const std::optional<descriptor_t> &attested,
+    const std::optional<descriptor_t> &active
+  ) {
+    if (!worker_is_root || account_uid == 0) {
+      return desktop_account_access_e::wrong_account;
+    }
+    if (!attested || !active || !eligible_graphical_session(*active) ||
+        attested->id != active->id || attested->uid != active->uid) {
+      return desktop_account_access_e::pending;
+    }
+    if (active->session_class == "greeter" || active->uid == account_uid) {
+      return desktop_account_access_e::allowed;
+    }
+    return desktop_account_access_e::wrong_account;
+  }
 
   /** Return a UI-only stage when the active session matches the worker attachment. */
   std::string_view desktop_stage(const descriptor_t &attached, const descriptor_t &active);
@@ -117,6 +150,9 @@ namespace plank::session {
   std::optional<environment_t> discover_environment(const descriptor_t &session);
 
   /** Authorize an account against the supervisor-controlled active seat0 session. */
+  desktop_account_access_e supervisor_desktop_account_access(uid_t account_uid);
+
+  /** Return true when the account may use the supervisor-controlled desktop now. */
   bool supervisor_attests_account_for_active_seat0(uid_t account_uid);
 
   /** Encode or decode one bounded supervisor desktop-attachment update. */
