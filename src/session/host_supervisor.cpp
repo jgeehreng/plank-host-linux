@@ -1299,6 +1299,14 @@ int main(int argc, char **argv) {
           }
         }
         if (worker.pid <= 0) {
+          // The greeter worker still serves PAM. Publish it as a logout only
+          // after an explicit workstation logout; otherwise the client waits
+          // and can open the desktop again.
+          if (selected->session_class == "greeter" && logout_settles_on_greeter) {
+            setenv("PLANK_LOGOUT_GREETER", "1", 1);
+          } else {
+            unsetenv("PLANK_LOGOUT_GREETER");
+          }
           auto launched = launch_worker(worker_path, *selected, complete_environment);
           if (launched.pid > 0) {
             worker = std::move(launched);
@@ -1427,6 +1435,8 @@ int main(int argc, char **argv) {
           if (active->session_class == "user" &&
               active->uid == request->account_uid) {
             std::clog << "Authenticated account already owns the active graphical session\n";
+          } else if (logout_settles_on_greeter) {
+            std::cerr << "Refusing to start a graphical session after an explicit logout\n";
           } else if (active->session_class == "greeter") {
             if (start_authenticated_user_session(request->account_uid)) {
               std::clog << "Requested a graphical session for UID "

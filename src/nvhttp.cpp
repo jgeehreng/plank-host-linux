@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -373,7 +374,17 @@ namespace nvhttp {
       body["expires_in"] = 300;
       // Advisory UI state, published only after PAM succeeds. Stream launch
       // still independently enforces active-desktop ownership and generation.
-      body["desktop_stage"] = plank::session::confirmed_desktop_stage();
+      // A greeter reached because the desktop X server disappeared is not a
+      // logout. Only the supervisor's explicit-logout flag publishes "greeter",
+      // so the client keeps waiting and may start the desktop again.
+      std::string stage {plank::session::confirmed_desktop_stage()};
+      if (stage == "greeter") {
+        const char *logout_greeter = std::getenv("PLANK_LOGOUT_GREETER");
+        if (logout_greeter == nullptr || std::string_view {logout_greeter} != "1") {
+          stage = "unknown";
+        }
+      }
+      body["desktop_stage"] = std::move(stage);
     } else {
       body["state"] = "denied";
       body["phase"] = static_cast<std::uint16_t>(step.phase);
