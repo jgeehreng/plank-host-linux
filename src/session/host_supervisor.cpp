@@ -1083,6 +1083,10 @@ int main(int argc, char **argv) {
   // logout clears this and is allowed to settle on the greeter.
   std::optional<uid_t> restore_desktop_uid;
   bool logout_settles_on_greeter = false;
+  // A display change may briefly leave seat0 on the sign-in screen. Only that
+  // window may put the open desktop back. Any later return to the sign-in
+  // screen is a logout and must stay there.
+  auto restore_display_until = std::chrono::steady_clock::time_point::min();
   std::optional<plank::session::display_request_t> pending_display_request;
   std::optional<physical_display_lease_t> physical_display_lease;
   const auto startup_layout =
@@ -1146,6 +1150,7 @@ int main(int argc, char **argv) {
       } else if (!virtual_startup) {
         std::cerr << "Refusing a display transition because display.startup_layout is invalid\n";
       } else if (selected->session_class == "greeter") {
+        restore_display_until = std::chrono::steady_clock::now() + std::chrono::seconds {45};
         const auto request = std::move(*pending_display_request);
         std::clog << "Applying PLANK display transition: "
                   << request.layout << ' ' << request.mode_1;
@@ -1160,6 +1165,7 @@ int main(int argc, char **argv) {
         }
       } else if (selected->session_class == "user" &&
                  selected->uid == pending_display_request->account_uid) {
+        restore_display_until = std::chrono::steady_clock::now() + std::chrono::seconds {45};
         const auto environment = plank::session::discover_environment(*selected);
         if (!environment) {
           std::cerr << "Unable to discover the active user's X11 environment for a live display transition\n";
@@ -1192,21 +1198,34 @@ int main(int argc, char **argv) {
     bool hold_greeter_worker = false;
     if (selected && selected->session_class == "greeter" && !logout_settles_on_greeter &&
         restore_desktop_uid && *restore_desktop_uid != 0) {
-      if (const auto existing = plank::session::local_user_x11_session(*restore_desktop_uid)) {
-        hold_greeter_worker = true;
-        if (worker.pid > 0 && worker.greeter) {
+      const bool restoring_display =
+        std::chrono::steady_clock::now() < restore_display_until;
+      if (restoring_display) {
+        if (const auto existing = plank::session::local_user_x11_session(*restore_desktop_uid)) {
+          hold_greeter_worker = true;
+          if (worker.pid > 0 && worker.greeter) {
+            stop_worker(worker);
+          }
+          if (selected->id != existing->id) {
+            std::clog << "Seat0 is at the sign-in screen while desktop session "
+                      << existing->id << " remains; restoring UID "
+                      << *restore_desktop_uid << '\n';
+            if (!start_authenticated_user_session(*restore_desktop_uid)) {
+              std::cerr << "Unable to restore the authenticated desktop for UID "
+                        << *restore_desktop_uid << '\n';
+            }
+            next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {1};
+          }
+        }
+      } else {
+        std::clog << "Seat0 returned to the sign-in screen without a display change; treating it as logout\n";
+        logout_settles_on_greeter = true;
+        restore_desktop_uid.reset();
+        restore_display_until = std::chrono::steady_clock::time_point::min();
+        if (worker.pid > 0) {
           stop_worker(worker);
         }
-        if (selected->id != existing->id) {
-          std::clog << "Seat0 is at the sign-in screen while desktop session "
-                    << existing->id << " remains; restoring UID "
-                    << *restore_desktop_uid << '\n';
-          if (!start_authenticated_user_session(*restore_desktop_uid)) {
-            std::cerr << "Unable to restore the authenticated desktop for UID "
-                      << *restore_desktop_uid << '\n';
-          }
-          next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {1};
-        }
+        next_launch = std::chrono::steady_clock::now();
       }
     }
     if (!selected) {
