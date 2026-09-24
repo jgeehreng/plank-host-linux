@@ -290,7 +290,7 @@ namespace plank::session {
       for (unsigned char character : name) {
         const bool letter = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
         const bool digit = character >= '0' && character <= '9';
-        if (!letter && !digit && character != '.' && character != '_' && character != '-' && character != '@') return false;
+        if (!letter && !digit && character != '.' && character != '_' && character != '-') return false;
       }
       return true;
     }
@@ -304,7 +304,9 @@ namespace plank::session {
       while (true) {
         const int status = getpwuid_r(uid, &record, buffer.data(), buffer.size(), &result);
         if (status == 0 && result != nullptr && result->pw_name != nullptr) {
-          const std::string name {result->pw_name};
+          std::string_view name {result->pw_name};
+          const auto domain = name.find('@');
+          if (domain != std::string_view::npos) name = name.substr(0, domain);
           return publishable_account_name(name) ? std::optional<std::string> {name} : std::nullopt;
         }
         if (status != ERANGE || buffer.size() >= maximum_buffer) return std::nullopt;

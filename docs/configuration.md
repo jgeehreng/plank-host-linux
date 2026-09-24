@@ -52,7 +52,8 @@ bypass PAM/SSSD/HBAC policy or active-desktop ownership checks.
 Publish the login name of the account that owns the active user desktop on
 unauthenticated `/serverinfo`. Accepted values: `true` or `false`. Default:
 `false`. When `true` and a user desktop is active, Clients show
-`In Session - Ernie.Armitage`, using the account name as stored. When `false`,
+`In Session - Ernie.Armitage`. A directory login is published as the
+name before `@`. When `false`,
 or when the name cannot be published, Clients show `In Session` with no
 account. This does not publish a UID or session id, and it does not apply to
 the sign-in screen.
