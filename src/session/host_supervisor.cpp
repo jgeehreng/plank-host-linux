@@ -1216,6 +1216,15 @@ int main(int argc, char **argv) {
             }
             next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {1};
           }
+        } else {
+          std::clog << "Seat0 is at the sign-in screen and the desktop session is gone; treating it as logout\n";
+          logout_settles_on_greeter = true;
+          restore_desktop_uid.reset();
+          restore_display_until = std::chrono::steady_clock::time_point::min();
+          if (worker.pid > 0) {
+            stop_worker(worker);
+          }
+          next_launch = std::chrono::steady_clock::now();
         }
       } else {
         std::clog << "Seat0 returned to the sign-in screen without a display change; treating it as logout\n";
