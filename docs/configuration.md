@@ -47,6 +47,16 @@ inactivity before the host cleans up the stream. Default: `10000`.
 Allow PAM authentication as root. Default: `false`. Enabling this does not
 bypass PAM/SSSD/HBAC policy or active-desktop ownership checks.
 
+### publish_session_user
+
+Publish the login name of the account that owns the active user desktop on
+unauthenticated `/serverinfo`. Accepted values: `true` or `false`. Default:
+`false`. When `true` and a user desktop is active, Clients show
+`In Session - Ernie.Armitage`, using the account name as stored. When `false`,
+or when the name cannot be published, Clients show `In Session` with no
+account. This does not publish a UID or session id, and it does not apply to
+the sign-in screen.
+
 ### pkey
 
 Path to the host TLS private key. The packaged profile uses

@@ -812,6 +812,7 @@ namespace config {
 
     platf::get_host_name(),  // host_name,
     "plank-state.json"s,  // file_state
+    false,  // publish_session_user
   };
 
   /**
@@ -1546,6 +1547,7 @@ namespace config {
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
     string_f(vars, "host_name", nvhttp.host_name);
+    bool_f(vars, "publish_session_user", nvhttp.publish_session_user);
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
 

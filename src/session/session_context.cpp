@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
@@ -23,6 +24,7 @@
 #include <vector>
 
 #include <systemd/sd-login.h>
+#include <pwd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -280,6 +282,48 @@ namespace plank::session {
     std::lock_guard lock {current_update_mutex};
     return active && current_update ?
       std::string {desktop_stage(current_update->session, *active)} : "unknown";
+  }
+
+  namespace {
+    bool publishable_account_name(std::string_view name) {
+      if (name.empty() || name.size() > 64) return false;
+      for (unsigned char character : name) {
+        const bool letter = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+        const bool digit = character >= '0' && character <= '9';
+        if (!letter && !digit && character != '.' && character != '_' && character != '-') return false;
+      }
+      return true;
+    }
+
+    std::optional<std::string> account_name_for_uid(uid_t uid) {
+      constexpr std::size_t maximum_buffer = 1024U * 1024U;
+      std::size_t size = 16384;
+      std::vector<char> buffer(size);
+      passwd record {};
+      passwd *result = nullptr;
+      while (true) {
+        const int status = getpwuid_r(uid, &record, buffer.data(), buffer.size(), &result);
+        if (status == 0 && result != nullptr && result->pw_name != nullptr) {
+          const std::string name {result->pw_name};
+          return publishable_account_name(name) ? std::optional<std::string> {name} : std::nullopt;
+        }
+        if (status != ERANGE || buffer.size() >= maximum_buffer) return std::nullopt;
+        buffer.resize(std::min(buffer.size() * 2, maximum_buffer));
+      }
+    }
+  }  // namespace
+
+  std::optional<std::string> confirmed_user_account_name() {
+    const auto active = active_seat0_graphical_session();
+    uid_t uid {};
+    {
+      std::lock_guard lock {current_update_mutex};
+      if (!active || !current_update || desktop_stage(current_update->session, *active) != "user") {
+        return std::nullopt;
+      }
+      uid = active->uid;
+    }
+    return account_name_for_uid(uid);
   }
 
   std::optional<descriptor_t> describe(std::string_view session_id) {

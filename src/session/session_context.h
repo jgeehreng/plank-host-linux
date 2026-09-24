@@ -124,6 +124,12 @@ namespace plank::session {
   /** Query the confirmed worker stage; never grants desktop or authentication access. */
   std::string confirmed_desktop_stage();
 
+  /**
+   * Login name of the confirmed user desktop.
+   * Empty unless that desktop is a user session with a publishable account name.
+   */
+  std::optional<std::string> confirmed_user_account_name();
+
   /** Query one logind session. */
   std::optional<descriptor_t> describe(std::string_view session_id);
 

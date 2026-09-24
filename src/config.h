@@ -227,6 +227,7 @@ namespace config {
 
     std::string file_state;  ///< Path to the persisted Sunshine state file.
 
+    bool publish_session_user;  ///< Publish the desktop account name on unauthenticated serverinfo.
   };
 
   /**

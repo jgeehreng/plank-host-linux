@@ -134,6 +134,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "ping_timeout",
     "pkey",
     "port",
+    "publish_session_user",
     "startup_layout",
     "mdns_discovery",
     "host_name",

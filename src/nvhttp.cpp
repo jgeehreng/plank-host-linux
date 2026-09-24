@@ -1481,6 +1481,11 @@ namespace nvhttp {
       plank::session::confirmed_desktop_stage() == "user" ||
       session_stream::session_count() > 0;
     tree.put("root.PlankOccupied", occupied ? 1 : 0);
+    if (config::nvhttp.publish_session_user) {
+      if (const auto account = plank::session::confirmed_user_account_name()) {
+        tree.put("root.PlankSessionUser", *account);
+      }
+    }
 
     std::ostringstream data;
 
