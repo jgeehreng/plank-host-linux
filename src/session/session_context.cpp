@@ -290,7 +290,7 @@ namespace plank::session {
       for (unsigned char character : name) {
         const bool letter = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
         const bool digit = character >= '0' && character <= '9';
-        if (!letter && !digit && character != '.' && character != '_' && character != '-') return false;
+        if (!letter && !digit && character != '.' && character != '_' && character != '-' && character != '@') return false;
       }
       return true;
     }
