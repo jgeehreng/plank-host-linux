@@ -55,6 +55,8 @@ namespace plank::session {
       acquire,
       activate,
       release,
+      start_user,
+      logout,
     } action {action_t::acquire};
     std::string layout;
     std::string mode_1;
@@ -89,7 +91,40 @@ namespace plank::session {
   };
 
   /** Return true only for a supported, local active seat0 session. */
-  bool eligible_graphical_session(const descriptor_t &session);
+  inline bool eligible_graphical_session(const descriptor_t &session) {
+    return session.active && !session.remote && session.seat == "seat0" &&
+           session.type == "x11" && session.state == "active" &&
+           (session.session_class == "user" || session.session_class == "greeter");
+  }
+
+  /**
+   * Decide whether an authenticated account may use the active desktop.
+   * A seat that has not caught up to the worker is pending, not a rejection.
+   */
+  enum class desktop_account_access_e {
+    allowed,
+    wrong_account,
+    pending,
+  };
+
+  inline desktop_account_access_e desktop_account_access(
+    uid_t account_uid,
+    bool worker_is_root,
+    const std::optional<descriptor_t> &attested,
+    const std::optional<descriptor_t> &active
+  ) {
+    if (!worker_is_root || account_uid == 0) {
+      return desktop_account_access_e::wrong_account;
+    }
+    if (!attested || !active || !eligible_graphical_session(*active) ||
+        attested->id != active->id || attested->uid != active->uid) {
+      return desktop_account_access_e::pending;
+    }
+    if (active->session_class == "greeter" || active->uid == account_uid) {
+      return desktop_account_access_e::allowed;
+    }
+    return desktop_account_access_e::wrong_account;
+  }
 
   /** Return a UI-only stage when the active session matches the worker attachment. */
   std::string_view desktop_stage(const descriptor_t &attached, const descriptor_t &active);
@@ -114,12 +149,28 @@ namespace plank::session {
   std::optional<descriptor_t> active_seat0_graphical_session();
 
   /**
+   * Find the local seat0 X11 GDM greeter, including an online session that
+   * logind has not yet marked active after a user logout.
+   */
+  std::optional<descriptor_t> seat0_greeter_session();
+
+  /**
+   * Find a local seat0 X11 user session for an account, including an inactive
+   * session that logind can activate. Greeter and lock-screen sessions are
+   * ignored.
+   */
+  std::optional<descriptor_t> local_user_x11_session(uid_t account_uid);
+
+  /**
    * Find DISPLAY and Xauthority in a process belonging to the selected
    * logind session. Only a small environment whitelist is returned.
    */
   std::optional<environment_t> discover_environment(const descriptor_t &session);
 
   /** Authorize an account against the supervisor-controlled active seat0 session. */
+  desktop_account_access_e supervisor_desktop_account_access(uid_t account_uid);
+
+  /** Return true when the account may use the supervisor-controlled desktop now. */
   bool supervisor_attests_account_for_active_seat0(uid_t account_uid);
 
   /** Encode or decode one bounded supervisor desktop-attachment update. */
@@ -147,6 +198,22 @@ namespace plank::session {
 
   /** Request a display transition from GDM or the authenticated user's desktop. */
   display_request_status request_display_transition(const display_request_t &request);
+
+  /**
+   * After PAM succeeds at the GDM greeter, start that account's graphical
+   * session. The worker completes GDM's UserVerifier with in-memory PAM
+   * secrets; this request only activates an existing seat0 desktop or waits
+   * for GDM to publish the new session.
+   */
+  display_request_status request_user_session(uid_t account_uid);
+
+  /**
+   * Return seat0 to GDM for an attached user desktop. Plank Disconnect and
+   * quit must not call this; only an explicit workstation logout should.
+   * The worker may already be detaching from a dying X server; the
+   * supervisor terminates that UID's remaining local user session.
+   */
+  display_request_status request_user_logout();
 
   /** Mark a temporary physical-display lease active once native setup allocates its stream. */
   display_request_status activate_display_lease(uid_t account_uid);

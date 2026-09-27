@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -18,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 // lib includes
@@ -54,6 +56,7 @@
 #include "plank_topology.h"
 #include "platform/common.h"
 #include "process.h"
+#include "session/gdm_login.h"
 #include "session/session_context.h"
 #include "session_stream.h"
 #include "utility.h"
@@ -300,13 +303,106 @@ namespace nvhttp {
       body["expires_in"] = 300;
       // Advisory UI state, published only after PAM succeeds. Stream launch
       // still independently enforces active-desktop ownership and generation.
-      body["desktop_stage"] = plank::session::confirmed_desktop_stage();
+      // A greeter reached because the desktop X server disappeared is not a
+      // logout. Only the supervisor's explicit-logout flag publishes "greeter",
+      // so the client keeps waiting and may start the desktop again.
+      std::string stage {plank::session::confirmed_desktop_stage()};
+      if (stage == "greeter") {
+        const char *logout_greeter = std::getenv("PLANK_LOGOUT_GREETER");
+        if (logout_greeter == nullptr || std::string_view {logout_greeter} != "1") {
+          stage = "unknown";
+        }
+      }
+      body["desktop_stage"] = std::move(stage);
     } else {
       body["state"] = "denied";
       body["phase"] = static_cast<std::uint16_t>(step.phase);
       body["pam_status"] = step.pam_status;
     }
     return body;
+  }
+
+  std::mutex start_desktop_mutex;
+  std::unordered_map<std::string, bool> start_desktop_by_conversation;
+
+  /**
+   * @brief Read the optional start_desktop flag; omitted values default on.
+   */
+  std::optional<bool> read_start_desktop(const nlohmann::json &body) {
+    if (!body.contains("start_desktop")) {
+      return true;
+    }
+    if (!body["start_desktop"].is_boolean()) {
+      return std::nullopt;
+    }
+    return body["start_desktop"].get<bool>();
+  }
+
+  void remember_start_desktop(const std::string &conversation_id, bool start_desktop) {
+    if (conversation_id.empty()) {
+      return;
+    }
+    std::lock_guard lock {start_desktop_mutex};
+    if (start_desktop_by_conversation.size() >= 32) {
+      start_desktop_by_conversation.clear();
+    }
+    start_desktop_by_conversation[conversation_id] = start_desktop;
+  }
+
+  bool take_start_desktop(const std::string &conversation_id, bool fallback) {
+    std::lock_guard lock {start_desktop_mutex};
+    const auto found = start_desktop_by_conversation.find(conversation_id);
+    if (found == start_desktop_by_conversation.end()) {
+      return fallback;
+    }
+    const bool start_desktop = found->second;
+    start_desktop_by_conversation.erase(found);
+    return start_desktop;
+  }
+
+  /**
+   * @brief After PAM succeeds at the greeter, start that account's desktop.
+   *
+   * @param step Completed PAM result.
+   * @param peer TLS peer bound to the conversation.
+   * @param secrets In-memory PAM responses used once for GDM, then wiped.
+   * @param start_desktop False for logout reconnect; PAM must not skip-GDM.
+   */
+  void maybe_start_user_session_after_pam(
+    const plank::auth::web_auth_step_t &step,
+    std::string_view peer,
+    std::vector<std::string> &secrets,
+    bool start_desktop
+  ) {
+    using state_e = plank::auth::step_t::state_e;
+    if (step.state != state_e::authenticated || step.session_token.empty() || !web_auth) {
+      return;
+    }
+    if (!start_desktop) {
+      BOOST_LOG(info) << "PAM succeeded without starting a desktop; leaving the sign-in screen in place"sv;
+      return;
+    }
+    if (plank::session::confirmed_desktop_stage() != "greeter") {
+      return;
+    }
+    const auto identity = web_auth->identity(step.session_token, peer);
+    const auto uid = identity ? plank::auth::account_uid(*identity) : std::nullopt;
+    if (!uid || !identity) {
+      return;
+    }
+    if (!plank::session::local_user_x11_session(*uid) &&
+        !plank::session::complete_gdm_login(*identity, secrets)) {
+      BOOST_LOG(warning) << "Unable to start a graphical session after PAM; the greeter remains"sv;
+      return;
+    }
+    const auto status = plank::session::request_user_session(*uid);
+    if (status == plank::session::display_request_status::submitted) {
+      BOOST_LOG(info) << "Requested a graphical session for the authenticated account after PAM"sv;
+    } else if (status == plank::session::display_request_status::wrong_user) {
+      BOOST_LOG(warning) << "Refusing to start a graphical session for an account that does not own the desktop"sv;
+    } else {
+      BOOST_LOG(warning) << "Unable to start a graphical session after PAM; the greeter remains"sv;
+    }
   }
 
   /**
@@ -353,7 +449,16 @@ namespace nvhttp {
       return;
     }
     const auto username = body["username"].get<std::string>();
+    const auto start_desktop = read_start_desktop(body);
+    if (!start_desktop) {
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                      {{"state", "invalid-request"}});
+      return;
+    }
     const auto step = web_auth->begin(username, peer, cancellation);
+    remember_start_desktop(step.conversation_id, *start_desktop);
+    std::vector<std::string> secrets;
+    maybe_start_user_session_after_pam(step, peer, secrets, *start_desktop);
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 
@@ -391,7 +496,29 @@ namespace nvhttp {
       }
     }
     const auto conversation_id = body["conversation_id"].get<std::string>();
+    const auto start_desktop = body.contains("start_desktop") ?
+      read_start_desktop(body) :
+      std::optional<bool> {take_start_desktop(conversation_id, true)};
+    if (!start_desktop) {
+      for (auto &value : responses) {
+        explicit_bzero(value.data(), value.size());
+      }
+      write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
+                      {{"state", "invalid-request"}});
+      return;
+    }
+    if (body.contains("start_desktop")) {
+      take_start_desktop(conversation_id, *start_desktop);
+    }
+    std::vector<std::string> secrets = responses;
     const auto step = web_auth->respond(conversation_id, peer, std::move(responses), cancellation);
+    remember_start_desktop(step.conversation_id, *start_desktop);
+    maybe_start_user_session_after_pam(step, peer, secrets, *start_desktop);
+    for (auto &secret : secrets) {
+      if (!secret.empty()) {
+        explicit_bzero(secret.data(), secret.size());
+      }
+    }
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 
@@ -433,30 +560,70 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Verify that a request's PAM account owns this user-service process.
+   * @brief Decide whether a PAM account may launch while seat0 is changing.
    *
-   * @param request Authorized HTTPS request.
-   * @return True when the authenticated account UID matches the active desktop.
+   * A desktop that belongs to someone else cancels the login. A seat that has
+   * not caught up to the worker keeps the login and waits.
    */
-  std::optional<uid_t> authenticated_account_uid_for_desktop(
-    const req_https_t &request
-  ) {
+  struct desktop_account_decision_t {
+    enum class action_e {
+      proceed,
+      wait,
+      reject,
+    } action {action_e::reject};
+    std::optional<uid_t> uid;
+  };
+
+  desktop_account_decision_t decide_desktop_account(const req_https_t &request) {
+    desktop_account_decision_t decision;
     if (!web_auth) {
-      return std::nullopt;
+      return decision;
     }
     const auto token = bearer_token(request);
     const auto identity = web_auth->identity(token, authentication_peer(request));
     if (!identity) {
-      return std::nullopt;
+      return decision;
     }
     const auto uid = plank::auth::account_uid(*identity);
-    if (!uid ||
-        !plank::session::supervisor_attests_account_for_active_seat0(*uid)) {
+    if (!uid) {
       web_auth->cancel(token);
       BOOST_LOG(warning) << "Rejecting PLANK stream for an account that is not authorized for the active desktop"sv;
-      return std::nullopt;
+      return decision;
     }
-    return uid;
+    switch (plank::session::supervisor_desktop_account_access(*uid)) {
+      case plank::session::desktop_account_access_e::allowed:
+        decision.action = desktop_account_decision_t::action_e::proceed;
+        decision.uid = uid;
+        return decision;
+      case plank::session::desktop_account_access_e::pending:
+        decision.action = desktop_account_decision_t::action_e::wait;
+        BOOST_LOG(info) << "Deferring the stream until the authenticated desktop is attached"sv;
+        return decision;
+      case plank::session::desktop_account_access_e::wrong_account:
+        web_auth->cancel(token);
+        BOOST_LOG(warning) << "Rejecting PLANK stream for an account that is not authorized for the active desktop"sv;
+        return decision;
+    }
+    return decision;
+  }
+
+  bool finish_desktop_account_decision(
+    pt::ptree &tree,
+    const desktop_account_decision_t &decision,
+    const char *session_field
+  ) {
+    if (decision.action == desktop_account_decision_t::action_e::proceed) {
+      return false;
+    }
+    tree.put(std::string {"root."} + session_field, 0);
+    if (decision.action == desktop_account_decision_t::action_e::wait) {
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
+      return true;
+    }
+    tree.put("root.<xmlattr>.status_code", 403);
+    tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+    return true;
   }
 
   /**
@@ -1355,11 +1522,20 @@ namespace nvhttp {
 
     auto appid = util::from_view(get_arg(args, "appid"));
 
-    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
-    if (!authenticated_uid) {
+    const auto desktop_account = decide_desktop_account(request);
+    if (finish_desktop_account_decision(tree, desktop_account, "gamesession")) {
+      return;
+    }
+    const auto &authenticated_uid = desktop_account.uid;
+
+    if (plank::session::confirmed_desktop_stage() == "greeter") {
+      // PAM can start GDM's user session, but the greeter X display is not the
+      // authenticated desktop. Return the existing transition status so the
+      // Client waits and relaunches after the media worker attaches to it.
+      BOOST_LOG(info) << "Deferring launch until GDM publishes the authenticated desktop"sv;
       tree.put("root.gamesession", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
       return;
     }
 
@@ -1520,11 +1696,17 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     });
 
-    const auto authenticated_uid = authenticated_account_uid_for_desktop(request);
-    if (!authenticated_uid) {
+    const auto desktop_account = decide_desktop_account(request);
+    if (finish_desktop_account_decision(tree, desktop_account, "resume")) {
+      return;
+    }
+    const auto &authenticated_uid = desktop_account.uid;
+
+    if (plank::session::confirmed_desktop_stage() == "greeter") {
+      BOOST_LOG(info) << "Deferring resume until GDM publishes the authenticated desktop"sv;
       tree.put("root.resume", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "The authenticated account does not own this desktop session");
+      tree.put("root.<xmlattr>.status_code", 425);
+      tree.put("root.<xmlattr>.status_message", "PLANK host display transition started");
       return;
     }
 

@@ -120,6 +120,7 @@ namespace stream {
     std::string input_session_id;  ///< Internal desktop key retaining input devices across resume.
     bool plank_display_lease {};  ///< Whether this stream owns the temporary physical-display layout.
     uid_t plank_display_lease_uid {};  ///< PAM account that owns the display lease.
+    bool keep_desktop_on_end {};  ///< Same-user takeover must not log the desktop out.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
     std::shared_ptr<void> plank_transport_endpoint;  ///< Native QUIC data-plane lifetime.
 
@@ -1235,6 +1236,11 @@ namespace stream {
     }
 
     void stop(session_t &session, const std::uint32_t termination_reason) {
+#ifdef PLANK_TRANSPORT
+      if (termination_reason == PLANK_TRANSPORT_TERMINATION_SESSION_TAKEN_OVER) {
+        session.keep_desktop_on_end = true;
+      }
+#endif
       stop(session);
 #ifdef PLANK_TRANSPORT
       if (send_host_termination(&session, termination_reason) != 0) {
@@ -1353,6 +1359,8 @@ namespace stream {
             BOOST_LOG(error) << "Unable to submit the temporary PLANK display-lease release"sv;
           }
         }
+        // Disconnect and quit leave the owner desktop running. GNOME Logout
+        // returns seat0 to GDM; the Client then shows the sign-in UI.
       }
 
       BOOST_LOG(debug) << "Session ended"sv;

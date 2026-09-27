@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
@@ -23,6 +24,7 @@
 #include <vector>
 
 #include <systemd/sd-login.h>
+#include <pwd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -267,12 +269,6 @@ namespace plank::session {
     };
   }  // namespace
 
-  bool eligible_graphical_session(const descriptor_t &session) {
-    return session.active && !session.remote && session.seat == "seat0" &&
-           session.type == "x11" && session.state == "active" &&
-           (session.session_class == "user" || session.session_class == "greeter");
-  }
-
   std::string_view desktop_stage(const descriptor_t &attached, const descriptor_t &active) {
     if (!eligible_graphical_session(active) || attached.id != active.id ||
         attached.uid != active.uid || attached.session_class != active.session_class) {
@@ -348,6 +344,71 @@ namespace plank::session {
     auto result = describe(session_id.get());
     if (!result || result->uid != uid || !eligible_graphical_session(*result)) return std::nullopt;
     return result;
+  }
+
+  std::optional<descriptor_t> seat0_greeter_session() {
+    char **raw = nullptr;
+    // Rocky 9 systemd 252 requires the UID out-params; they may be null.
+    const int count = sd_seat_get_sessions("seat0", &raw, nullptr, nullptr);
+    if (count <= 0 || raw == nullptr) {
+      if (raw != nullptr) {
+        for (char **session = raw; *session != nullptr; ++session) {
+          free(*session);
+        }
+        free(raw);
+      }
+      return std::nullopt;
+    }
+    std::optional<descriptor_t> found;
+    for (int index = 0; raw[index] != nullptr; ++index) {
+      auto candidate = describe(raw[index]);
+      free(raw[index]);
+      if (!candidate || candidate->remote || candidate->seat != "seat0" ||
+          candidate->type != "x11" || candidate->session_class != "greeter") {
+        continue;
+      }
+      if (candidate->state != "active" && candidate->state != "online") {
+        continue;
+      }
+      if (!found || (!found->active && candidate->active)) {
+        found = std::move(candidate);
+      }
+    }
+    free(raw);
+    return found;
+  }
+
+  std::optional<descriptor_t> local_user_x11_session(uid_t account_uid) {
+    if (account_uid == 0) return std::nullopt;
+    char **raw = nullptr;
+    const int count = sd_uid_get_sessions(account_uid, 0, &raw);
+    if (count <= 0 || raw == nullptr) {
+      if (raw != nullptr) {
+        for (char **session = raw; *session != nullptr; ++session) {
+          free(*session);
+        }
+        free(raw);
+      }
+      return std::nullopt;
+    }
+    std::optional<descriptor_t> found;
+    for (int index = 0; raw[index] != nullptr; ++index) {
+      auto candidate = describe(raw[index]);
+      free(raw[index]);
+      if (!candidate || candidate->uid != account_uid || candidate->remote ||
+          candidate->seat != "seat0" || candidate->type != "x11" ||
+          candidate->session_class != "user") {
+        continue;
+      }
+      if (candidate->state != "active" && candidate->state != "online") {
+        continue;
+      }
+      if (!found || (!found->active && candidate->active)) {
+        found = std::move(candidate);
+      }
+    }
+    free(raw);
+    return found;
   }
 
   std::optional<environment_t> discover_environment(const descriptor_t &session) {
@@ -448,16 +509,23 @@ namespace plank::session {
     const std::string_view action =
       request.action == display_request_t::action_t::acquire ? "acquire" :
       request.action == display_request_t::action_t::activate ? "activate" :
-                                                               "release";
+      request.action == display_request_t::action_t::release ? "release" :
+      request.action == display_request_t::action_t::start_user ? "start-user" :
+      request.action == display_request_t::action_t::logout ? "logout" :
+                                                                  std::string_view {};
     const bool acquire_valid = request.action != display_request_t::action_t::acquire ||
       ((request.layout == "single" || request.layout == "dual-horizontal") &&
        plank::topology::valid_virtual_layout_modes(
          request.layout, request.mode_1, request.mode_2
        ) && plank::topology::valid_primary_output(request.layout, request.primary_output));
     const bool control_valid = request.action == display_request_t::action_t::acquire ||
-      (request.layout.empty() && request.mode_1.empty() && request.mode_2.empty() &&
+      ((request.action == display_request_t::action_t::activate ||
+        request.action == display_request_t::action_t::release ||
+        request.action == display_request_t::action_t::start_user ||
+        request.action == display_request_t::action_t::logout) &&
+       request.layout.empty() && request.mode_1.empty() && request.mode_2.empty() &&
        request.primary_output == -1);
-    if (!acquire_valid || !control_valid || request.account_uid == 0) {
+    if (action.empty() || !acquire_valid || !control_valid || request.account_uid == 0) {
       return {};
     }
     const auto account_uid = std::to_string(request.account_uid);
@@ -493,9 +561,12 @@ namespace plank::session {
     const auto action = fields[1] == "acquire" ? display_request_t::action_t::acquire :
       fields[1] == "activate" ? display_request_t::action_t::activate :
       fields[1] == "release" ? display_request_t::action_t::release :
-                                display_request_t::action_t {};
+      fields[1] == "start-user" ? display_request_t::action_t::start_user :
+      fields[1] == "logout" ? display_request_t::action_t::logout :
+                                  display_request_t::action_t {};
     if (fields[1] != "acquire" && fields[1] != "activate" &&
-        fields[1] != "release") return std::nullopt;
+        fields[1] != "release" && fields[1] != "start-user" &&
+        fields[1] != "logout") return std::nullopt;
     display_request_t request {
       action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
       static_cast<uid_t>(*account_uid), fields[6] == "-1" ? -1 : fields[6] == "0" ? 0 : 1
@@ -643,16 +714,24 @@ namespace plank::session {
       attestation = current_update;
     }
     if (!attestation) return display_request_status::unavailable;
-    const auto active = active_seat0_graphical_session();
-    if (!active || active->id != attestation->session.id ||
-        active->uid != attestation->session.uid) {
-      return display_request_status::unavailable;
-    }
-    if (active->session_class == "user" && active->uid != request.account_uid) {
-      return display_request_status::wrong_user;
-    }
-    if (active->session_class != "greeter" && active->session_class != "user") {
-      return display_request_status::unavailable;
+    if (request.action == display_request_t::action_t::logout) {
+      if (attestation->session.session_class != "user" ||
+          attestation->session.uid == 0 ||
+          attestation->session.uid != request.account_uid) {
+        return display_request_status::unavailable;
+      }
+    } else {
+      const auto active = active_seat0_graphical_session();
+      if (!active || active->id != attestation->session.id ||
+          active->uid != attestation->session.uid) {
+        return display_request_status::unavailable;
+      }
+      if (active->session_class == "user" && active->uid != request.account_uid) {
+        return display_request_status::wrong_user;
+      }
+      if (active->session_class != "greeter" && active->session_class != "user") {
+        return display_request_status::unavailable;
+      }
     }
 
     std::lock_guard lock {supervisor_descriptor_mutex};
@@ -662,6 +741,27 @@ namespace plank::session {
       return display_request_status::unavailable;
     }
     return display_request_status::submitted;
+  }
+
+  display_request_status request_user_session(uid_t account_uid) {
+    return request_display_transition({
+      display_request_t::action_t::start_user, {}, {}, {}, account_uid
+    });
+  }
+
+  display_request_status request_user_logout() {
+    std::optional<update_t> attestation;
+    {
+      std::lock_guard lock {current_update_mutex};
+      attestation = current_update;
+    }
+    if (!attestation || attestation->session.session_class != "user" ||
+        attestation->session.uid == 0) {
+      return display_request_status::unavailable;
+    }
+    return request_display_transition({
+      display_request_t::action_t::logout, {}, {}, {}, attestation->session.uid
+    });
   }
 
   display_request_status activate_display_lease(uid_t account_uid) {
@@ -704,18 +804,20 @@ namespace plank::session {
       *descriptor, std::move(on_reattach), std::move(on_desktop_handoff));
   }
 
-  bool supervisor_attests_account_for_active_seat0(uid_t account_uid) {
-    if (geteuid() != 0 || account_uid == 0) return false;
-    std::optional<update_t> attestation;
+  desktop_account_access_e supervisor_desktop_account_access(uid_t account_uid) {
+    std::optional<descriptor_t> attested;
     {
       std::lock_guard lock {current_update_mutex};
-      attestation = current_update;
+      if (current_update) attested = current_update->session;
     }
-    if (!attestation) return false;
-    const auto active = active_seat0_graphical_session();
-    if (!active || active->id != attestation->session.id ||
-        active->uid != attestation->session.uid) return false;
-    return active->session_class == "greeter" || active->uid == account_uid;
+    return desktop_account_access(
+      account_uid, geteuid() == 0, attested, active_seat0_graphical_session()
+    );
+  }
+
+  bool supervisor_attests_account_for_active_seat0(uid_t account_uid) {
+    return supervisor_desktop_account_access(account_uid) ==
+           desktop_account_access_e::allowed;
   }
 
   std::uint64_t desktop_generation() {

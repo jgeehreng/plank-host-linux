@@ -27,6 +27,7 @@
 
 #include <poll.h>
 #include <pwd.h>
+#include <systemd/sd-bus.h>
 #include <systemd/sd-login.h>
 #include <linux/capability.h>
 #include <sys/prctl.h>
@@ -70,6 +71,7 @@ namespace {
     std::uint64_t generation {};
     int pam_descriptor {-1};  ///< Private descriptor-only broker delegation endpoint.
     bool greeter {false};
+    uid_t uid {};
   };
 
   struct physical_output_t {
@@ -310,6 +312,7 @@ namespace {
     worker.session_id = session.id;
     worker.generation = update.generation;
     worker.greeter = session.session_class == "greeter";
+    worker.uid = session.uid;
     return true;
   }
 
@@ -959,6 +962,95 @@ namespace {
     return prepared && started;
   }
 
+  bool activate_logind_session(std::string_view session_id) {
+    if (session_id.empty() || session_id.find('\0') != std::string_view::npos) {
+      return false;
+    }
+    sd_bus *bus = nullptr;
+    if (sd_bus_open_system(&bus) < 0 || bus == nullptr) {
+      return false;
+    }
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = nullptr;
+    const std::string id {session_id};
+    const int status = sd_bus_call_method(
+      bus,
+      "org.freedesktop.login1",
+      "/org/freedesktop/login1",
+      "org.freedesktop.login1.Manager",
+      "ActivateSession",
+      &error,
+      &reply,
+      "s",
+      id.c_str()
+    );
+    if (status < 0) {
+      std::cerr << "logind ActivateSession failed for session " << id;
+      if (sd_bus_error_is_set(&error)) {
+        std::cerr << ": " << error.message;
+      }
+      std::cerr << '\n';
+    }
+    sd_bus_error_free(&error);
+    sd_bus_message_unref(reply);
+    sd_bus_unref(bus);
+    return status >= 0;
+  }
+
+  bool terminate_logind_session(std::string_view session_id) {
+    if (session_id.empty() || session_id.find('\0') != std::string_view::npos) {
+      return false;
+    }
+    sd_bus *bus = nullptr;
+    if (sd_bus_open_system(&bus) < 0 || bus == nullptr) {
+      return false;
+    }
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = nullptr;
+    const std::string id {session_id};
+    const int status = sd_bus_call_method(
+      bus,
+      "org.freedesktop.login1",
+      "/org/freedesktop/login1",
+      "org.freedesktop.login1.Manager",
+      "TerminateSession",
+      &error,
+      &reply,
+      "s",
+      id.c_str()
+    );
+    if (status < 0) {
+      std::cerr << "logind TerminateSession failed for session " << id;
+      if (sd_bus_error_is_set(&error)) {
+        std::cerr << ": " << error.message;
+      }
+      std::cerr << '\n';
+    }
+    sd_bus_error_free(&error);
+    sd_bus_message_unref(reply);
+    sd_bus_unref(bus);
+    return status >= 0;
+  }
+
+  bool start_authenticated_user_session(uid_t uid) {
+    if (uid == 0) return false;
+    const auto active = plank::session::active_seat0_graphical_session();
+    if (active && active->session_class == "user") {
+      return active->uid == uid;
+    }
+    if (!active || active->session_class != "greeter") {
+      return false;
+    }
+    if (const auto existing = plank::session::local_user_x11_session(uid)) {
+      std::clog << "Activating existing graphical session " << existing->id
+                << " for UID " << uid << '\n';
+      return activate_logind_session(existing->id);
+    }
+    std::clog << "Waiting for GDM to publish a user session after PAM for UID "
+              << uid << '\n';
+    return true;
+  }
+
   void usage(const char *program) {
     std::cerr << "usage: " << program << " [--worker ABSOLUTE_PATH]\n";
   }
@@ -1005,6 +1097,15 @@ int main(int argc, char **argv) {
   };
 
   worker_t worker;
+  // Remember the desktop to put back if a display change leaves seat0 on the
+  // sign-in screen while that user's X session still exists. An explicit
+  // logout clears this and is allowed to settle on the greeter.
+  std::optional<uid_t> restore_desktop_uid;
+  bool logout_settles_on_greeter = false;
+  // A display change may briefly leave seat0 on the sign-in screen. Only that
+  // window may put the open desktop back. Any later return to the sign-in
+  // screen is a logout and must stay there.
+  auto restore_display_until = std::chrono::steady_clock::time_point::min();
   std::optional<plank::session::display_request_t> pending_display_request;
   std::optional<physical_display_lease_t> physical_display_lease;
   const auto startup_layout =
@@ -1068,6 +1169,7 @@ int main(int argc, char **argv) {
       } else if (!virtual_startup) {
         std::cerr << "Refusing a display transition because display.startup_layout is invalid\n";
       } else if (selected->session_class == "greeter") {
+        restore_display_until = std::chrono::steady_clock::now() + std::chrono::seconds {45};
         const auto request = std::move(*pending_display_request);
         std::clog << "Applying PLANK display transition: "
                   << request.layout << ' ' << request.mode_1;
@@ -1082,6 +1184,7 @@ int main(int argc, char **argv) {
         }
       } else if (selected->session_class == "user" &&
                  selected->uid == pending_display_request->account_uid) {
+        restore_display_until = std::chrono::steady_clock::now() + std::chrono::seconds {45};
         const auto environment = plank::session::discover_environment(*selected);
         if (!environment) {
           std::cerr << "Unable to discover the active user's X11 environment for a live display transition\n";
@@ -1107,10 +1210,60 @@ int main(int argc, char **argv) {
       continue;
     }
 
+    if (worker.pid > 0 && !worker.greeter && worker.uid != 0 && !logout_settles_on_greeter) {
+      restore_desktop_uid = worker.uid;
+    }
     const auto selected = plank::session::active_seat0_graphical_session();
+    bool hold_greeter_worker = false;
+    if (selected && selected->session_class == "greeter" && !logout_settles_on_greeter &&
+        restore_desktop_uid && *restore_desktop_uid != 0) {
+      const bool restoring_display =
+        std::chrono::steady_clock::now() < restore_display_until;
+      if (restoring_display) {
+        if (const auto existing = plank::session::local_user_x11_session(*restore_desktop_uid)) {
+          hold_greeter_worker = true;
+          if (worker.pid > 0 && worker.greeter) {
+            stop_worker(worker);
+          }
+          if (selected->id != existing->id) {
+            std::clog << "Seat0 is at the sign-in screen while desktop session "
+                      << existing->id << " remains; restoring UID "
+                      << *restore_desktop_uid << '\n';
+            if (!start_authenticated_user_session(*restore_desktop_uid)) {
+              std::cerr << "Unable to restore the authenticated desktop for UID "
+                        << *restore_desktop_uid << '\n';
+            }
+            next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {1};
+          }
+        } else {
+          std::clog << "Seat0 is at the sign-in screen and the desktop session is gone; treating it as logout\n";
+          logout_settles_on_greeter = true;
+          restore_desktop_uid.reset();
+          restore_display_until = std::chrono::steady_clock::time_point::min();
+          if (worker.pid > 0) {
+            stop_worker(worker);
+          }
+          next_launch = std::chrono::steady_clock::now();
+        }
+      } else {
+        std::clog << "Seat0 returned to the sign-in screen without a display change; treating it as logout\n";
+        logout_settles_on_greeter = true;
+        restore_desktop_uid.reset();
+        restore_display_until = std::chrono::steady_clock::time_point::min();
+        if (worker.pid > 0) {
+          stop_worker(worker);
+        }
+        next_launch = std::chrono::steady_clock::now();
+      }
+    }
     if (!selected) {
       pending_session.clear();
-    } else if ((worker.pid <= 0 || worker.session_id != selected->id) &&
+      if (const auto greeter = plank::session::seat0_greeter_session();
+          greeter && !greeter->active) {
+        activate_logind_session(greeter->id);
+      }
+    } else if (!hold_greeter_worker &&
+               (worker.pid <= 0 || worker.session_id != selected->id) &&
                std::chrono::steady_clock::now() >= next_launch) {
       const auto environment = plank::session::discover_environment(*selected);
       const auto account = account_for_uid(selected->uid);
@@ -1193,10 +1346,22 @@ int main(int argc, char **argv) {
           }
         }
         if (worker.pid <= 0) {
+          // The greeter worker still serves PAM. Publish it as a logout only
+          // after an explicit workstation logout; otherwise the client waits
+          // and can open the desktop again.
+          if (selected->session_class == "greeter" && logout_settles_on_greeter) {
+            setenv("PLANK_LOGOUT_GREETER", "1", 1);
+          } else {
+            unsetenv("PLANK_LOGOUT_GREETER");
+          }
           auto launched = launch_worker(worker_path, *selected, complete_environment, account->name);
           if (launched.pid > 0) {
             worker = std::move(launched);
             pending_session.clear();
+            if (!worker.greeter && worker.uid != 0) {
+              logout_settles_on_greeter = false;
+              restore_desktop_uid = worker.uid;
+            }
             std::clog << "Attached persistent PLANK machine worker to session "
                       << selected->id << ", UID " << selected->uid << '\n';
           } else {
@@ -1251,6 +1416,38 @@ int main(int argc, char **argv) {
         const auto active = plank::session::active_seat0_graphical_session();
         if (!request) {
           std::cerr << "Rejected malformed PLANK display transition request\n";
+        } else if (request->action ==
+                     plank::session::display_request_t::action_t::logout) {
+          logout_settles_on_greeter = true;
+          restore_desktop_uid.reset();
+          if (worker.greeter || worker.uid == 0 ||
+              worker.uid != request->account_uid) {
+            std::cerr << "Refused logout from a worker that is not attached to that desktop\n";
+          } else {
+            const auto existing =
+              plank::session::local_user_x11_session(request->account_uid);
+            const std::string session_id = existing ? existing->id :
+              (active && active->session_class == "user" &&
+               active->uid == request->account_uid ?
+                 active->id :
+                 std::string {});
+            if (session_id.empty()) {
+              std::clog << "Logout found no local user session for UID "
+                        << request->account_uid << "; seat0 is already at GDM\n";
+            } else if (terminate_logind_session(session_id)) {
+              std::clog << "Returned seat0 to GDM after an explicit workstation logout\n";
+              if (const auto greeter = plank::session::seat0_greeter_session()) {
+                if (activate_logind_session(greeter->id)) {
+                  std::clog << "Activated GDM session " << greeter->id
+                            << " after logout\n";
+                } else {
+                  std::cerr << "Unable to activate the GDM greeter after logout\n";
+                }
+              }
+            } else {
+              std::cerr << "Unable to terminate the authenticated desktop after logout\n";
+            }
+          }
         } else if (!active || active->id != worker.session_id ||
                    (active->session_class == "user" &&
                     active->uid != request->account_uid) ||
@@ -1279,6 +1476,23 @@ int main(int argc, char **argv) {
               std::cerr << "Released a temporary display lease after its X server disappeared\n";
             }
             physical_display_lease.reset();
+          }
+        } else if (request->action ==
+                     plank::session::display_request_t::action_t::start_user) {
+          if (active->session_class == "user" &&
+              active->uid == request->account_uid) {
+            std::clog << "Authenticated account already owns the active graphical session\n";
+          } else if (logout_settles_on_greeter) {
+            std::cerr << "Refusing to start a graphical session after an explicit logout\n";
+          } else if (active->session_class == "greeter") {
+            if (start_authenticated_user_session(request->account_uid)) {
+              std::clog << "Requested a graphical session for UID "
+                        << request->account_uid << " after PAM\n";
+            } else {
+              std::cerr << "Unable to start a graphical session after PAM; leaving the greeter in place\n";
+            }
+          } else {
+            std::cerr << "Refused user-session start outside the GDM greeter\n";
           }
         } else if (!pending_display_request) {
           pending_display_request = *request;
