@@ -45,6 +45,7 @@
 #endif
 
 // local includes
+#include "broadcast_output.h"
 #include "config.h"
 #include "auth/plank_admission.h"
 #include "auth/web_auth.h"
@@ -1541,6 +1542,9 @@ namespace nvhttp {
       plank::session::confirmed_desktop_stage() == "user" ||
       session_stream::session_count() > 0;
     tree.put("root.PlankOccupied", occupied ? 1 : 0);
+    tree.put("root.BroadcastSource", plank::broadcast::configured(
+      config::broadcast.output, config::broadcast.ndi_name,
+      config::broadcast.codec, config::broadcast.uv_path) ? 1 : 0);
     if (config::nvhttp.publish_session_user) {
       if (const auto account = plank::session::confirmed_user_account_name()) {
         tree.put("root.PlankSessionUser", *account);
@@ -1670,6 +1674,7 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    launch_session->broadcast_peer_ipv4 = authentication_peer(request);
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.gamesession", 0);
       return;
@@ -1857,6 +1862,7 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    launch_session->broadcast_peer_ipv4 = authentication_peer(request);
     if (!validate_capture_source(*launch_session, tree)) {
       tree.put("root.resume", 0);
       return;

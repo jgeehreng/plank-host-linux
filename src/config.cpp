@@ -20,6 +20,7 @@
 #include <boost/property_tree/ptree.hpp>
 
 // local includes
+#include "broadcast_output.h"
 #include "config.h"
 #include "entry_handler.h"
 #include "file_handler.h"
@@ -803,6 +804,8 @@ namespace config {
     10s,  // ping_timeout
   };
 
+  broadcast_t broadcast {};
+
   /**
    * @brief Default NVHTTP server configuration values used before file and CLI overrides.
    */
@@ -1556,6 +1559,15 @@ namespace config {
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
     bool_f(vars, "require_admission", nvhttp.require_admission);
+    bool_f(vars, "broadcast_output", broadcast.output);
+    string_f(vars, "broadcast_ndi_name", broadcast.ndi_name);
+    string_f(vars, "broadcast_codec", broadcast.codec);
+    string_f(vars, "broadcast_uv", broadcast.uv_path);
+    if (broadcast.uv_path.empty()) broadcast.uv_path = "uv";
+    if (broadcast.output && !plank::broadcast::configured(
+          broadcast.output, broadcast.ndi_name, broadcast.codec, broadcast.uv_path)) {
+      BOOST_LOG(error) << "broadcast_output is enabled without a usable NDI name, codec, and uv path"sv;
+    }
     int_between_f(vars, "admission_max_ttl", nvhttp.admission_max_ttl, {1, 86400 * 7});
     int_between_f(vars, "admission_clock_skew", nvhttp.admission_clock_skew, {0, 86400});
     path_f(vars, "admission_consume_dir", nvhttp.admission_consume_dir);

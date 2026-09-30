@@ -236,6 +236,18 @@ namespace config {
   };
 
   /**
+   * @brief Optional UltraGrid sender for a pinned local NDI source.
+   *
+   * Default off. The broker never receives this picture.
+   */
+  struct broadcast_t {
+    bool output = false;  ///< Start uv for an authenticated session when the client assigns a monitor.
+    std::string ndi_name;  ///< Pinned NDI source name. Empty disables the sender.
+    std::string codec;  ///< Administrator codec preset passed unchanged to uv.
+    std::string uv_path = "uv";  ///< UltraGrid executable name or absolute path.
+  };
+
+  /**
    * @brief Input emulation settings loaded from configuration.
    */
   struct input_t {
@@ -297,6 +309,7 @@ namespace config {
   extern video_t video;
   extern audio_t audio;
   extern stream_t stream;
+  extern broadcast_t broadcast;
   extern nvhttp_t nvhttp;
   extern input_t input;
   extern sunshine_t sunshine;

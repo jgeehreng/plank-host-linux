@@ -17,6 +17,7 @@ extern "C" {
 }
 
 // local includes
+#include "broadcast_output.h"
 #include "config.h"
 #include "clipboard_protocol.h"
 #include "display_device.h"
@@ -123,6 +124,8 @@ namespace stream {
     bool keep_desktop_on_end {};  ///< Same-user takeover must not log the desktop out.
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained until this stream is destroyed.
     std::shared_ptr<void> plank_transport_endpoint;  ///< Native QUIC data-plane lifetime.
+    std::string broadcast_peer_ipv4;  ///< Connected client IPv4 for the UltraGrid sender.
+    plank::broadcast::sender_t broadcast_sender;  ///< Session-scoped NDI sender. Stopped with the session.
 
     safe::mail_raw_t::event_t<bool> shutdown_event;  ///< Event raised when the stream should shut down.
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
@@ -773,6 +776,35 @@ namespace stream {
           send_video_bitrate_applied(session, *bitrate);
           break;
         }
+        case PLANK_TRANSPORT_CONTROL_BROADCAST_RECEIVE: {
+          if (control.payload_size != 2 * sizeof(std::uint32_t)) {
+            BOOST_LOG(error) << "Rejected malformed PLANK broadcast receive endpoint"sv;
+            break;
+          }
+          const auto address_word = plank_transport_control_read_u32(control.payload);
+          const auto port_word = plank_transport_control_read_u32(control.payload + 4);
+          if ((port_word >> 16) != 0) {
+            BOOST_LOG(error) << "Rejected malformed PLANK broadcast receive port"sv;
+            break;
+          }
+          const auto announced = plank::broadcast::ipv4_text(address_word);
+          plank::broadcast::request_t request;
+          request.enabled = config::broadcast.output;
+          request.uv_path = config::broadcast.uv_path;
+          request.ndi_name = config::broadcast.ndi_name;
+          request.codec = config::broadcast.codec;
+          request.peer_ipv4 = session->broadcast_peer_ipv4;
+          request.announced_ipv4 = announced;
+          request.video_port = static_cast<std::uint16_t>(port_word);
+          const auto command = plank::broadcast::build(request);
+          if (command.argv.empty()) {
+            BOOST_LOG(error) << "Not starting UltraGrid: "sv << command.refusal;
+            session->broadcast_sender.stop();
+            break;
+          }
+          session->broadcast_sender.replace(command);
+          break;
+        }
         default:
           BOOST_LOG(error) << "Rejected unexpected client PlankTransport control type "sv
                            << control.type;
@@ -1229,6 +1261,7 @@ namespace stream {
         return;
       }
 
+      session.broadcast_sender.stop();
       session.shutdown_event->raise(true);
       session.cursorThread.request_stop();
       session.clipboardThread.request_stop();
@@ -1428,6 +1461,7 @@ namespace stream {
       session->authentication_session = launch_session.authentication_session;
       session->plank_transport_endpoint = launch_session.plank_transport_endpoint;
       session->plank_feature_flags = launch_session.plank_feature_flags;
+      session->broadcast_peer_ipv4 = launch_session.broadcast_peer_ipv4;
 
       if (session->plank_display_lease &&
           plank::session::activate_display_lease(

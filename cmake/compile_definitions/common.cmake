@@ -182,6 +182,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/session_stream.h"
         "${CMAKE_SOURCE_DIR}/src/stream.cpp"
         "${CMAKE_SOURCE_DIR}/src/stream.h"
+        "${CMAKE_SOURCE_DIR}/src/broadcast_output.cpp"
+        "${CMAKE_SOURCE_DIR}/src/broadcast_output.h"
         "${CMAKE_SOURCE_DIR}/src/plank_topology.h"
         "${CMAKE_SOURCE_DIR}/src/video.cpp"
         "${CMAKE_SOURCE_DIR}/src/video.h"

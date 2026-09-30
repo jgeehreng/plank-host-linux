@@ -46,6 +46,7 @@ namespace session_stream {
 
     std::shared_ptr<void> authentication_session;  ///< PAM lifetime retained by PLANK streams.
     std::shared_ptr<void> plank_transport_endpoint;  ///< Experimental QUIC data-plane lifetime.
+    std::string broadcast_peer_ipv4;  ///< Connected client IPv4. UltraGrid may send only here.
   };
 
   /**

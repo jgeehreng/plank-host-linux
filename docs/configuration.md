@@ -73,6 +73,55 @@ Path to the host TLS certificate. The packaged profile uses
 Path to mutable workstation identity state. The packaged profile uses
 `/var/lib/plank/plank-state.json`.
 
+### require_admission
+
+Require a signed broker admission before operating-system authentication.
+Default: `false`. A client cannot disable this. When `true`, the host also
+needs `admission_max_ttl`, `admission_clock_skew`, and `admission_trust`.
+
+### admission_max_ttl
+
+Maximum signed admission lifetime in seconds, from 1 through 604800. This is
+host policy, not a protocol constant.
+
+### admission_clock_skew
+
+Wall-clock tolerance in seconds for admission timestamps, from 0 through 86400.
+
+### admission_consume_dir
+
+Directory that records consumed admission identifiers so they survive worker
+replacement and reboot. When omitted, the host uses `admissions` next to
+`file_state`.
+
+### admission_trust
+
+Comma-separated `key_id|issuer|base64url-ed25519-public-key` pins. `key_id`
+selects the key; it is not the key material.
+
+### broadcast_output
+
+Start a point-to-point UltraGrid sender for the pinned local NDI source while
+a PLANK session is connected. Accepted values: `true` or `false`. Default:
+`false`. The picture is not carried by PLANK or by a broker. When `false`,
+nothing about UltraGrid runs.
+
+### broadcast_ndi_name
+
+NDI source name UltraGrid captures, as reported by `uv -t ndi:help`. Required
+when `broadcast_output` is `true`. The sender always uses `ndi:name=` with
+this value. It does not capture the first NDI source it finds.
+
+### broadcast_codec
+
+Administrator codec preset passed to `uv -c`. Required when
+`broadcast_output` is `true`. A client cannot change it. A 10-bit 4:2:2
+preset such as ProRes matches Flame's NDI broadcast output.
+
+### broadcast_uv
+
+UltraGrid executable name or absolute path. Default: `uv`.
+
 ### log_path
 
 Path to the persistent host log. The packaged profile uses
