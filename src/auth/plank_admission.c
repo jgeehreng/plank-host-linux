@@ -210,8 +210,29 @@ int plank_admission_parse_trust_token(const char *token, plank_admission_key *ou
   return 1;
 }
 
+static int same_uuid_ignore_case(const char *left, const char *right) {
+  static const int hyphens[] = {8, 13, 18, 23};
+  if (!left || !right) return 0;
+  for (size_t i = 0; i < 36; ++i) {
+    int hyphen = 0;
+    unsigned char a = (unsigned char) left[i];
+    unsigned char b = (unsigned char) right[i];
+    for (size_t h = 0; h < 4; ++h) hyphen |= ((int) i == hyphens[h]);
+    if (hyphen) {
+      if (a != '-' || b != '-') return 0;
+      continue;
+    }
+    if (a >= 'A' && a <= 'F') a = (unsigned char) (a - 'A' + 'a');
+    if (b >= 'A' && b <= 'F') b = (unsigned char) (b - 'A' + 'a');
+    int hex_a = (a >= '0' && a <= '9') || (a >= 'a' && a <= 'f');
+    int hex_b = (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f');
+    if (!hex_a || !hex_b || a != b) return 0;
+  }
+  return left[36] == 0 && right[36] == 0;
+}
+
 int plank_admission_uniqueid_matches(const char *expected, const char *actual) {
-  return expected && actual && expected[0] && strcmp(expected, actual) == 0;
+  return same_uuid_ignore_case(expected, actual);
 }
 
 static int parse_payload(const uint8_t *payload, size_t len, plank_admission_fields *fields, int64_t *issued, int64_t *expires) {
@@ -381,7 +402,7 @@ void plank_admission_authorize(
     set_reason(decision, "wrong_purpose");
     return;
   }
-  if (!local_uniqueid || strcmp(fields.workstation_uniqueid, local_uniqueid) != 0) {
+  if (!plank_admission_uniqueid_matches(fields.workstation_uniqueid, local_uniqueid)) {
     decision->status = PLANK_ADMISSION_STATUS_REJECT;
     set_reason(decision, "wrong_uniqueid");
     return;
