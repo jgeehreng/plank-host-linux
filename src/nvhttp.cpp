@@ -9,6 +9,7 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -45,6 +46,7 @@
 
 // local includes
 #include "config.h"
+#include "auth/plank_admission.h"
 #include "auth/web_auth.h"
 #include "display_device.h"
 #include "globals.h"
@@ -523,6 +525,64 @@ namespace nvhttp {
       write_auth_json(response, SimpleWeb::StatusCode::client_error_bad_request,
                       {{"state", "invalid-request"}});
       return;
+    }
+    if (config::nvhttp.require_admission) {
+      std::array<plank_admission_key, PLANK_ADMISSION_KEYS_MAX> keys {};
+      size_t key_count = 0;
+      bool trust_ok = true;
+      std::string::size_type cursor = 0;
+      const std::string &trust = config::nvhttp.admission_trust;
+      while (trust_ok && cursor < trust.size()) {
+        auto comma = trust.find(',', cursor);
+        std::string token = trust.substr(cursor, comma == std::string::npos ? std::string::npos : comma - cursor);
+        if (!token.empty() && token.front() == ' ') token.erase(0, token.find_first_not_of(' '));
+        if (!token.empty()) {
+          if (key_count == keys.size() || !plank_admission_parse_trust_token(token.c_str(), &keys[key_count])) {
+            trust_ok = false;
+          } else {
+            ++key_count;
+          }
+        }
+        if (comma == std::string::npos) break;
+        cursor = comma + 1;
+      }
+      std::string consume_dir = config::nvhttp.admission_consume_dir;
+      if (consume_dir.empty()) {
+        consume_dir = (std::filesystem::path(config::nvhttp.file_state).parent_path() / "admissions").string();
+      }
+      const bool presented = body.contains("admission");
+      int wrapper_version = 0;
+      const char *payload = nullptr;
+      const char *signature = nullptr;
+      std::string payload_storage;
+      std::string signature_storage;
+      if (presented && body["admission"].is_object() && body["admission"].contains("v") &&
+          body["admission"]["v"].is_number_integer() && body["admission"].contains("payload") &&
+          body["admission"]["payload"].is_string() && body["admission"].contains("sig") &&
+          body["admission"]["sig"].is_string()) {
+        wrapper_version = body["admission"]["v"].get<int>();
+        payload_storage = body["admission"]["payload"].get<std::string>();
+        signature_storage = body["admission"]["sig"].get<std::string>();
+        payload = payload_storage.c_str();
+        signature = signature_storage.c_str();
+      }
+      const bool config_valid = trust_ok && key_count > 0 && config::nvhttp.admission_max_ttl > 0 &&
+                                config::nvhttp.admission_clock_skew >= 0 && !consume_dir.empty();
+      plank_admission_decision decision {};
+      const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+      plank_admission_authorize(
+          1, config_valid ? 1 : 0, presented ? 1 : 0, wrapper_version,
+          payload, signature, keys.data(), key_count, http::unique_id.c_str(), static_cast<int64_t>(now),
+          config::nvhttp.admission_max_ttl, config::nvhttp.admission_clock_skew, consume_dir.c_str(), &decision);
+      if (decision.status != PLANK_ADMISSION_STATUS_ACCEPT) {
+        BOOST_LOG(warning) << "PLANK admission rejected: "sv << decision.reason
+                           << " admission_id="sv << decision.admission_id
+                           << " key_id="sv << decision.key_id
+                           << " workstation_uniqueid="sv << http::unique_id;
+        write_auth_json(response, SimpleWeb::StatusCode::client_error_unauthorized,
+                        {{"state", "admission_rejected"}});
+        return;
+      }
     }
     const auto peer = authentication_peer(request);
     const auto step = web_auth->begin(username, peer);

@@ -813,6 +813,11 @@ namespace config {
     platf::get_host_name(),  // host_name,
     "plank-state.json"s,  // file_state
     false,  // publish_session_user
+    false,  // require_admission
+    0,  // admission_max_ttl
+    -1,  // admission_clock_skew
+    {},  // admission_consume_dir
+    {},  // admission_trust
   };
 
   /**
@@ -1550,6 +1555,11 @@ namespace config {
     bool_f(vars, "publish_session_user", nvhttp.publish_session_user);
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
+    bool_f(vars, "require_admission", nvhttp.require_admission);
+    int_between_f(vars, "admission_max_ttl", nvhttp.admission_max_ttl, {1, 86400 * 7});
+    int_between_f(vars, "admission_clock_skew", nvhttp.admission_clock_skew, {0, 86400});
+    path_f(vars, "admission_consume_dir", nvhttp.admission_consume_dir);
+    string_f(vars, "admission_trust", nvhttp.admission_trust);
 
     // The root-owned PAM broker enforces this setting. Consume it here so the
     // media worker accepts the shared configuration without owning auth policy.

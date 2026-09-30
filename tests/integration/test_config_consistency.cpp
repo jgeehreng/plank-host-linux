@@ -114,6 +114,10 @@ TEST(ConfigConsistencyTest, RuntimeAndDocumentedOptionsMatch) {
 TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
   const std::set<std::string, std::less<>> expected {
     "adapter_name",
+    "admission_clock_skew",
+    "admission_consume_dir",
+    "admission_max_ttl",
+    "admission_trust",
     "allow_root_login",
     "audio_sink",
     "cert",
@@ -135,6 +139,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "pkey",
     "port",
     "publish_session_user",
+    "require_admission",
     "startup_layout",
     "mdns_discovery",
     "host_name",

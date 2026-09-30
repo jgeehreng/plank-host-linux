@@ -228,6 +228,11 @@ namespace config {
     std::string file_state;  ///< Path to the persisted Sunshine state file.
 
     bool publish_session_user;  ///< Publish the desktop account name on unauthenticated serverinfo.
+    bool require_admission;  ///< Require a broker admission before PAM.
+    int admission_max_ttl;  ///< Maximum signed lifetime in seconds. Zero means unset.
+    int admission_clock_skew;  ///< Wall-clock tolerance in seconds. Negative means unset.
+    std::string admission_consume_dir;  ///< Machine-stable one-use admission directory.
+    std::string admission_trust;  ///< key_id|issuer|base64url-public-key entries.
   };
 
   /**

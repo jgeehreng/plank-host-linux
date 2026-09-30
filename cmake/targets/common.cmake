@@ -31,7 +31,7 @@ endif()
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 if(PLANK_PRODUCT_BUILD)
-    target_compile_definitions(sunshine PRIVATE PLANK_PRODUCT_BUILD=1)
+    target_compile_definitions(sunshine PRIVATE PLANK_PRODUCT_BUILD=1 PLANK_ADMISSION_OPENSSL=1)
 endif()
 
 if(PLANK_ENABLE_TRANSPORT)
