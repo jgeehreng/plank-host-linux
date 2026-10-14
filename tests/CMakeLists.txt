@@ -152,6 +152,8 @@ target_link_libraries(${PROJECT_NAME} ${TEST_LINK_LIBRARIES})
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE ${SUNSHINE_LINK_OPTIONS})
+# The broker admission codec uses OpenSSL off macOS, as in the sunshine target.
+target_compile_definitions(${PROJECT_NAME} PRIVATE PLANK_ADMISSION_OPENSSL=1)
 
 if(PLANK_ENABLE_TRANSPORT)
     add_dependencies(${PROJECT_NAME} plank-transport-build)
