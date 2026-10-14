@@ -5,7 +5,6 @@
 
 // local includes
 #include "display_device.h"
-#include "input.h"
 #include "logging.h"
 #include "process.h"
 
@@ -31,7 +30,7 @@ namespace proc {
   }
 
   int proc_t::execute(const int app_id) {
-    // Match the former application manager's clean-slate launch behavior.
+    // Replace only the stream reservation, not desktop-owned input devices.
     terminate();
 
     if (!is_desktop_app(app_id)) {
@@ -49,7 +48,6 @@ namespace proc {
   }
 
   void proc_t::terminate() {
-    input::terminate_retained_input();
     const int previous_app_id = _app_id.exchange(0, std::memory_order_acq_rel);
     if (previous_app_id != 0) {
       display_device::revert_configuration();

@@ -36,6 +36,7 @@ extern "C" {
 #include "utility.h"
 
 #ifdef PLANK_TRANSPORT
+  #include "raw_hid_feedback.h"
   #include <plank_transport.h>
   #include <plank_transport_control.h>
   #include <plank_transport_event.h>
@@ -110,6 +111,7 @@ namespace stream {
     struct {
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
       raw_hid::feedback_queue_t raw_hid_feedback_queue;
+      std::optional<std::vector<std::uint8_t>> raw_hid_pending;  ///< Unsent reliable tablet request, retained across transport backpressure.
       safe::mail_raw_t::queue_t<std::vector<std::vector<std::uint8_t>>> cursor_shape_queue;
       safe::mail_raw_t::event_t<PLANK_CURSOR_POSITION_WIRE_MESSAGE> cursor_position_event;
       safe::mail_raw_t::event_t<std::vector<std::vector<std::uint8_t>>> clipboard_offer_queue; ///< Latest local offer only.
@@ -829,9 +831,14 @@ namespace stream {
           }
 
           auto &raw_hid_feedback_queue = session->control.raw_hid_feedback_queue;
-          while (raw_hid_feedback_queue->peek()) {
-            const auto frame = raw_hid_feedback_queue->pop();
-            send_raw_hid_control(session, *frame);
+          auto &raw_hid_pending = session->control.raw_hid_pending;
+          const auto raw_hid_result = raw_hid::drain_feedback(raw_hid_feedback_queue, raw_hid_pending,
+            [&](const auto &frame) {
+              return send_raw_hid_control(session, frame);
+            });
+          if (raw_hid_result != PLANK_TRANSPORT_OK && raw_hid_result != PLANK_TRANSPORT_TIMEOUT) {
+            BOOST_LOG(warning) << "Unable to retain reliable raw HID control; releasing session input"sv;
+            session::stop(*session);
           }
 
           auto &cursor_shape_queue = session->control.cursor_shape_queue;
@@ -1301,7 +1308,8 @@ namespace stream {
       }
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
-      // Reset input on session stop to avoid stuck repeated keys
+      // Release held input, but retain desktop-owned device identities for
+      // later connections even when no stream reservation remains.
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input, session.input_connection_id);
 
@@ -1339,11 +1347,9 @@ namespace stream {
       // If this is the last session, invoke the platform callbacks
       if (--running_sessions == 0) {
         bool revert_display_config {config::video.dd.config_revert_on_disconnect};
-        if (proc::proc.running()) {
-        } else {
+        if (!proc::proc.running()) {
           // We have no app running and also no clients anymore.
           revert_display_config = true;
-          input::terminate_retained_input();
         }
 
         if (revert_display_config) {

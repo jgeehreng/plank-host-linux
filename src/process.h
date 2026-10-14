@@ -45,7 +45,9 @@ namespace proc {
     int running() const noexcept;
 
     /**
-     * @brief Release the Desktop reservation and retained input state.
+     * @brief Release the stream reservation and restore its display configuration.
+     *
+     * Desktop input devices belong to the input subsystem, not this reservation.
      */
     void terminate();
 

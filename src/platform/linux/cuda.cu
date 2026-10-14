@@ -502,6 +502,113 @@ namespace cuda {
     return 0;
   }
 
+  /**
+   * @brief Integrate each output column's exact source-pixel footprint.
+   * @param source Point-sampled normalized BGRA capture texture.
+   * @param output Float intermediate storage.
+   * @param pitch Intermediate byte stride.
+   * @param source_width Captured width.
+   * @param source_height Captured height.
+   * @param width Destination width.
+   */
+  __global__ void area_reduce_horizontal(cudaTextureObject_t source, std::uint8_t *output,
+                                        std::size_t pitch, int source_width, int source_height, int width) {
+    const int x = threadIdx.x + blockDim.x * blockIdx.x;
+    const int y = threadIdx.y + blockDim.y * blockIdx.y;
+    if (x >= width || y >= source_height) {
+      return;
+    }
+    const float begin = static_cast<float>(x) * source_width / width;
+    const float end = static_cast<float>(x + 1) * source_width / width;
+    float4 total = make_float4(0.0f);
+    const int last = min(static_cast<int>(ceilf(end)), source_width);
+    for (int column = static_cast<int>(floorf(begin)); column < last; ++column) {
+      const float weight = fminf(end, column + 1.0f) - fmaxf(begin, static_cast<float>(column));
+      total += tex2D<float4>(source, column + 0.5f, y + 0.5f) * weight;
+    }
+    reinterpret_cast<float4 *>(output + y * pitch)[x] = total / (end - begin);
+  }
+
+  /**
+   * @brief Integrate rows without quantizing the horizontal result to 8 bits.
+   * @param source Float horizontal intermediate.
+   * @param source_pitch Intermediate byte stride.
+   * @param output Float result storage.
+   * @param pitch Result byte stride.
+   * @param source_height Captured height.
+   * @param width Destination width.
+   * @param height Destination height.
+   */
+  __global__ void area_reduce_vertical(const std::uint8_t *source, std::size_t source_pitch,
+                                      std::uint8_t *output, std::size_t pitch,
+                                      int source_height, int width, int height) {
+    const int x = threadIdx.x + blockDim.x * blockIdx.x;
+    const int y = threadIdx.y + blockDim.y * blockIdx.y;
+    if (x >= width || y >= height) {
+      return;
+    }
+    const float begin = static_cast<float>(y) * source_height / height;
+    const float end = static_cast<float>(y + 1) * source_height / height;
+    float4 total = make_float4(0.0f);
+    const int last = min(static_cast<int>(ceilf(end)), source_height);
+    for (int row = static_cast<int>(floorf(begin)); row < last; ++row) {
+      const float weight = fminf(end, row + 1.0f) - fmaxf(begin, static_cast<float>(row));
+      total += reinterpret_cast<const float4 *>(source + row * source_pitch)[x] * weight;
+    }
+    reinterpret_cast<float4 *>(output + y * pitch)[x] = total / (end - begin);
+  }
+
+  std::unique_ptr<area_scaler_t> area_scaler_t::make(int source_width, int source_height, int width, int height) {
+    if (source_width <= 0 || source_height <= 0 || width <= 0 || height <= 0 ||
+        width > source_width || height > source_height) {
+      return nullptr;
+    }
+    auto scaler = std::unique_ptr<area_scaler_t>(new area_scaler_t());
+    scaler->source_width_ = source_width;
+    scaler->source_height_ = source_height;
+    scaler->width_ = width;
+    scaler->height_ = height;
+    void *buffer = nullptr;
+    const auto row_bytes = static_cast<std::size_t>(width) * sizeof(float4);
+    CU_CHECK_PTR(cudaMallocPitch(&buffer, &scaler->horizontal_pitch_, row_bytes, source_height),
+                 "Couldn't allocate horizontal area-reduction surface");
+    scaler->horizontal_.reset(buffer);
+    CU_CHECK_PTR(cudaMallocPitch(&buffer, &scaler->scaled_pitch_, row_bytes, height),
+                 "Couldn't allocate area-reduction result");
+    scaler->scaled_.reset(buffer);
+    cudaResourceDesc resource {};
+    resource.resType = cudaResourceTypePitch2D;
+    resource.res.pitch2D.devPtr = scaler->scaled_.get();
+    resource.res.pitch2D.desc = cudaCreateChannelDesc<float4>();
+    resource.res.pitch2D.width = width;
+    resource.res.pitch2D.height = height;
+    resource.res.pitch2D.pitchInBytes = scaler->scaled_pitch_;
+    cudaTextureDesc desc {};
+    desc.readMode = cudaReadModeElementType;
+    desc.filterMode = cudaFilterModePoint;
+    desc.addressMode[0] = desc.addressMode[1] = cudaAddressModeClamp;
+    CU_CHECK_PTR(cudaCreateTextureObject(&scaler->texture_, &resource, &desc, nullptr),
+                 "Couldn't create area-reduction texture");
+    return scaler;
+  }
+
+  area_scaler_t::~area_scaler_t() {
+    if (texture_) {
+      CU_CHECK_IGNORE(cudaDestroyTextureObject(texture_), "Couldn't free area-reduction texture");
+    }
+  }
+
+  int area_scaler_t::resize(cudaTextureObject_t source, stream_t::pointer stream) {
+    const dim3 block(32, 8);
+    area_reduce_horizontal<<<dim3(div_align(width_, 32), div_align(source_height_, 8)), block, 0, stream>>>(
+      source, static_cast<std::uint8_t *>(horizontal_.get()), horizontal_pitch_, source_width_, source_height_, width_);
+    CU_CHECK(cudaGetLastError(), "Horizontal area reduction failed");
+    area_reduce_vertical<<<dim3(div_align(width_, 32), div_align(height_, 8)), block, 0, stream>>>(
+      static_cast<const std::uint8_t *>(horizontal_.get()), horizontal_pitch_,
+      static_cast<std::uint8_t *>(scaled_.get()), scaled_pitch_, source_height_, width_, height_);
+    return CU_CHECK_IGNORE(cudaGetLastError(), "Vertical area reduction failed");
+  }
+
   std::optional<tex_t> tex_t::make(int height, int pitch) {
     tex_t tex;
 

@@ -6,6 +6,7 @@
 // standard includes
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -13,15 +14,21 @@
 
 extern "C" {
 #include <moonlight-common-c/src/plank.h>
+#ifdef PLANK_TRANSPORT
+  #include <plank_transport_input.h>
+#endif
 }
 
 // local includes
-#include "../tests_common.h"
 #include "src/config.h"
+#include "src/globals.h"
 #include "src/input.h"
 #include "src/platform/virtualhid_input.h"
+#include "src/process.h"
 #include "src/raw_hid_tablet.h"
 #include "src/utility.h"
+
+#include <gtest/gtest.h>
 
 namespace {
   std::vector<std::uint8_t> make_raw_hid_frame(
@@ -91,7 +98,6 @@ namespace {
       // fixture run against the next test's replacement platform backend.
       static_cast<task_pool_util::TaskPool &>(task_pool) = task_pool_util::TaskPool {};
       sessions.clear();
-      input::terminate_retained_input();
       input::testing::set_platform_input({});
     }
 
@@ -160,6 +166,137 @@ TEST_F(InputRetainedSessionTest, DisconnectSuspendsRatherThanDiscardingResumable
 
   input::reset(resumed, resumed_connection_id);
   EXPECT_EQ(input::testing::raw_hid_generation(resumed), 8);
+}
+
+TEST_F(InputRetainedSessionTest, OrphanReservationCleanupAndFreshLaunchKeepDesktopInput) {
+  proc::proc_t reservation;
+  ASSERT_EQ(reservation.execute(proc::desktop_app_id), 0);
+  std::uint64_t lease = 0;
+  auto first = allocate("plank-desktop", lease);
+  ASSERT_TRUE(input::testing::handle_raw_hid(first, make_raw_hid_device_frame(7)));
+  input::reset(first, lease);
+
+  // Match a completed stream join: only the desktop owner may retain input.
+  std::weak_ptr<input::input_t> retained = first;
+  sessions.clear();
+  first.reset();
+  // These are the real reservation calls made by /launch after network loss.
+  reservation.terminate();
+  ASSERT_FALSE(retained.expired());
+  ASSERT_EQ(reservation.execute(proc::desktop_app_id), 0);
+  ASSERT_FALSE(retained.expired());
+  std::uint64_t next_lease = 0;
+  auto resumed = allocate("plank-desktop", next_lease);
+  EXPECT_EQ(resumed, retained.lock());
+  EXPECT_GT(next_lease, lease);
+  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 7);
+  reservation.terminate();
+}
+
+TEST_F(InputRetainedSessionTest, FreshReservationCannotDestroyAnIdleDesktopTablet) {
+  std::uint64_t lease = 0;
+  auto first = allocate("plank-desktop", lease);
+  ASSERT_TRUE(input::testing::handle_raw_hid(first, make_raw_hid_device_frame(7)));
+  input::reset(first, lease);
+  proc::proc_t reservation;
+  ASSERT_EQ(reservation.running(), 0);
+  ASSERT_EQ(reservation.execute(proc::desktop_app_id), 0);
+  std::uint64_t next_lease = 0;
+  auto resumed = allocate("plank-desktop", next_lease);
+  EXPECT_EQ(first, resumed);
+  EXPECT_EQ(input::testing::raw_hid_generation(resumed), 7);
+  reservation.terminate();
+}
+
+TEST_F(InputRetainedSessionTest, DesktopShutdownReleasesInputAfterLastStreamReference) {
+  std::uint64_t lease = 0;
+  auto first = allocate("plank-desktop", lease);
+  input::reset(first, lease);
+  ASSERT_NO_FATAL_FAILURE(drain_tasks());
+  std::weak_ptr<input::input_t> retained = first;
+  sessions.clear();
+  first.reset();
+  ASSERT_FALSE(retained.expired());
+  input::testing::set_platform_input({});
+  EXPECT_TRUE(retained.expired());
+}
+
+TEST_F(InputRetainedSessionTest, DisconnectReleasesNormalizedPenWithoutViewport) {
+  std::uint64_t lease = 0;
+  auto session = allocate("normalized-pen-cleanup", lease);
+  auto &context = platf::virtualhid::get_client_context(input::testing::client_context(session));
+  ASSERT_NE(context.pen, nullptr);
+  platf::pen_input_t pen {};
+  pen.toolType = LI_TOOL_TYPE_PEN;
+  pen.eventType = LI_TOUCH_EVENT_DOWN;
+  pen.penButtons = LI_PEN_BUTTON_PRIMARY;
+  pen.pressureOrDistance = 0.7F;
+  platf::virtualhid::pen_update(context, {}, pen);
+  ASSERT_EQ(context.pressed_pen_buttons.size(), 1);
+  input::reset(session, lease);
+  EXPECT_TRUE(context.pressed_pen_buttons.empty());
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::cancel);
+}
+
+#ifdef PLANK_TRANSPORT
+TEST_F(InputRetainedSessionTest, NativePenCancelDoesNotRequireDisplayGeometry) {
+  std::uint64_t lease = 0;
+  auto session = allocate("cancel-without-viewport", lease);
+  auto &context = platf::virtualhid::get_client_context(input::testing::client_context(session));
+  ASSERT_NE(context.pen, nullptr);
+  platf::pen_input_t pen {};
+  pen.toolType = LI_TOOL_TYPE_ERASER;
+  pen.eventType = LI_TOUCH_EVENT_DOWN;
+  pen.penButtons = LI_PEN_BUTTON_PRIMARY;
+  pen.pressureOrDistance = 0.5F;
+  platf::virtualhid::pen_update(context, {}, pen);
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_PEN_SIZE> payload {};
+  payload[0] = LI_TOUCH_EVENT_CANCEL_ALL;
+  payload[1] = LI_TOOL_TYPE_UNKNOWN;
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_PEN, payload.data(), payload.size()));
+  EXPECT_TRUE(context.pressed_pen_buttons.empty());
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::cancel);
+}
+#endif
+
+TEST_F(InputRetainedSessionTest, RebindAndCleanupCannotRaceInputDelivery) {
+  using namespace std::chrono_literals;
+  std::uint64_t lease = 0;
+  auto session = allocate("input-serialization", lease);
+  std::promise<void> locked, unlock, reset_started, rebind_started;
+  auto gate = unlock.get_future();
+  auto holder = std::async(std::launch::async, [&] {
+    input::testing::with_input_lock([&] {
+      locked.set_value();
+      gate.wait();
+    });
+  });
+  locked.get_future().wait();
+  auto resetting = std::async(std::launch::async, [&] {
+    reset_started.set_value();
+    input::reset(session, lease);
+  });
+  auto rebinding = std::async(std::launch::async, [&] {
+    rebind_started.set_value();
+    std::uint64_t next_lease = 0;
+    auto resumed = input::alloc(std::make_shared<safe::mail_raw_t>(), "input-serialization", next_lease);
+    input::testing::handle_mouse_button(resumed, 1, false);
+    return std::make_pair(resumed, next_lease);
+  });
+  reset_started.get_future().wait();
+  rebind_started.get_future().wait();
+  EXPECT_EQ(resetting.wait_for(30ms), std::future_status::timeout);
+  EXPECT_EQ(rebinding.wait_for(30ms), std::future_status::timeout);
+  unlock.set_value();
+  holder.get();
+  resetting.get();
+  auto resumed = rebinding.get();
+  sessions.push_back(resumed);
+  EXPECT_EQ(session, resumed.first);
+  EXPECT_GT(resumed.second, lease);
+  // Regardless of which waiter acquires the lock first, old cleanup cannot
+  // release the new lease's button after it has been pressed.
+  EXPECT_TRUE(mouse->last_submitted_event().pressed);
 }
 
 TEST_F(InputRetainedSessionTest, LeftButtonReleaseIsImmediateAndNotRepeatedOnDisconnect) {
@@ -293,6 +430,29 @@ TEST_F(InputRetainedSessionTest, StaleDisconnectDoesNotReleaseResumedConnections
   input::testing::handle_mouse_button(resumed, 1, true);
   EXPECT_EQ(mouse->submit_count(), after_press + 1);
   EXPECT_FALSE(mouse->last_submitted_event().pressed);
+}
+
+TEST_F(InputRetainedSessionTest, RebindBeforeOldDisconnectReleasesPreviousLease) {
+  std::uint64_t lease = 0;
+  auto session = allocate("rebind-before-disconnect", lease);
+  input::testing::handle_mouse_button(session, 1, false);
+  auto &context = platf::virtualhid::get_client_context(input::testing::client_context(session));
+  platf::pen_input_t pen {};
+  pen.toolType = LI_TOOL_TYPE_PEN;
+  pen.eventType = LI_TOUCH_EVENT_DOWN;
+  pen.pressureOrDistance = 0.6F;
+  platf::virtualhid::pen_update(context, {}, pen);
+
+  std::uint64_t next_lease = 0;
+  auto resumed = allocate("rebind-before-disconnect", next_lease);
+  ASSERT_EQ(session, resumed);
+  EXPECT_FALSE(mouse->last_submitted_event().pressed);
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::cancel);
+  input::testing::handle_mouse_button(resumed, 1, false);
+  platf::virtualhid::pen_update(context, {}, pen);
+  input::reset(session, lease);
+  EXPECT_TRUE(mouse->last_submitted_event().pressed);
+  EXPECT_EQ(context.pen->last_submitted_tool().transition, lvh::PointerTransition::update);
 }
 
 TEST_F(InputRetainedSessionTest, ReconnectKeepsNewDragHeldUntilItsOwnRelease) {

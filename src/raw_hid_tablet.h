@@ -1,15 +1,15 @@
 /**
  * @file src/raw_hid_tablet.h
- * @brief Session-scoped raw HID tablet redirection.
+ * @brief Desktop-owned raw HID tablet redirection with per-stream transport bindings.
  */
 #pragma once
-
-#include <cstdint>
-#include <memory>
-#include <vector>
-
 #include "raw_hid_contact.h"
 #include "thread_safe.h"
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <vector>
 
 namespace raw_hid {
   using feedback_queue_t = safe::mail_raw_t::queue_t<std::vector<std::uint8_t>>;
@@ -22,7 +22,7 @@ namespace raw_hid {
   bool available();
 
   /**
-   * @brief Owns virtual HID interfaces created for one streaming session.
+   * @brief Owns virtual HID interfaces retained across desktop stream connections.
    */
   class tablet_t {
   public:
@@ -34,7 +34,7 @@ namespace raw_hid {
     explicit tablet_t(feedback_queue_t feedback_queue);
 
     /**
-     * @brief Destroy all virtual interfaces owned by this session.
+     * @brief Destroy all virtual interfaces owned by this tablet redirector.
      */
     ~tablet_t();
 
@@ -91,6 +91,9 @@ namespace raw_hid {
      * @brief Return the endpoint creation epoch for reconnect regression tests.
      */
     std::uint64_t endpoint_epoch();
+
+    /** @brief Replace contact cleanup for deterministic syscall-failure tests. */
+    void set_contact_cleanup_for_test(std::function<bool()> cleanup);
 #endif
 
   private:

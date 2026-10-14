@@ -26,7 +26,6 @@ extern "C" {
 #include "audio.h"
 #include "config.h"
 #include "globals.h"
-#include "input.h"
 #include "logging.h"
 #include "session_stream.h"
 #include "plank_bitrate.h"
@@ -172,8 +171,9 @@ namespace session_stream {
       );
       plank_transport_native_endpoint_stop(endpoint);
     }
+    // Joining each stream releases held input. Keep desktop-owned tablet
+    // endpoints intact for the authenticated replacement connection.
     server.clear(true, termination_reason);
-    input::terminate_retained_input();
   }
 
   void notify_desktop_handoff() {

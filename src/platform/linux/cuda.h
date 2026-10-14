@@ -6,6 +6,7 @@
 
 #if defined(SUNSHINE_BUILD_CUDA)
   // standard includes
+  #include <cstddef>
   #include <cstdint>
   #include <memory>
   #include <optional>
@@ -164,6 +165,51 @@ namespace cuda {
     viewport_t viewport;
 
     float scale;
+  };
+
+  /**
+   * @brief Area-average an NvFBC texture entirely on the GPU before conversion.
+   *
+   * Two separable passes bound work to the source dimensions, including very
+   * small destinations. Float intermediates retain fractional 8-bit samples
+   * until the final 8/10-bit conversion. Allocate once per encoder, not per frame.
+   */
+  class area_scaler_t {
+  public:
+    /**
+     * @brief Allocate a downscaler; return null on invalid sizes or CUDA failure.
+     * @param source_width Captured width in pixels.
+     * @param source_height Captured height in pixels.
+     * @param width Content viewport width, excluding letterbox bars.
+     * @param height Content viewport height, excluding letterbox bars.
+     */
+    static std::unique_ptr<area_scaler_t> make(int source_width, int source_height, int width, int height);
+
+    /** @brief Destroy the texture before releasing its backing device storage. */
+    ~area_scaler_t();
+
+    /**
+     * @brief Submit both passes on the caller's conversion stream.
+     * @param source Point-sampled, normalized BGRA capture texture.
+     * @param stream Stream shared with conversion and NVENC submission.
+     * @return Zero on success, negative on a CUDA launch failure.
+     */
+    int resize(cudaTextureObject_t source, stream_t::pointer stream);
+
+    /** @brief Return the point-sampled float texture for scale-1 conversion. */
+    cudaTextureObject_t texture() const { return texture_; }
+
+  private:
+    area_scaler_t() = default;
+    ptr_t horizontal_;  ///< Float BGRA intermediate; destination width, source height.
+    ptr_t scaled_;  ///< Float BGRA result; destination width and height.
+    std::size_t horizontal_pitch_ = 0;  ///< Intermediate row stride in bytes.
+    std::size_t scaled_pitch_ = 0;  ///< Result row stride in bytes.
+    cudaTextureObject_t texture_ = 0;  ///< Point texture backed by scaled_.
+    int source_width_ = 0;  ///< Captured width.
+    int source_height_ = 0;  ///< Captured height.
+    int width_ = 0;  ///< Resampled width.
+    int height_ = 0;  ///< Resampled height.
   };
 }  // namespace cuda
 

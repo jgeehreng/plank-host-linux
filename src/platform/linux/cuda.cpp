@@ -886,6 +886,18 @@ namespace cuda {
         }
         sws = std::move(*converter);
         sws.apply_colorspace(colorspace);
+        if (sws.viewport.width < input_width || sws.viewport.height < input_height) {
+          area_scaler = area_scaler_t::make(input_width, input_height, sws.viewport.width, sws.viewport.height);
+          if (!area_scaler) {
+            return false;
+          }
+          // The filtered texture already matches the content viewport. Keep its
+          // letterbox offsets, but do not sample/resize it a second time.
+          sws.scale = 1.0f;
+          BOOST_LOG(info) << "NvFBC direct NVENC GPU area scaling: "sv
+                          << input_width << 'x' << input_height << " -> "sv
+                          << sws.viewport.width << 'x' << sws.viewport.height;
+        }
       }
 
       encoder = ::nvenc::make_nvenc_cuda_encoder({
@@ -928,14 +940,22 @@ namespace cuda {
           output_width, output_height, stream.get());
       } else {
         auto &texture = static_cast<cuda::img_t &>(img).tex;
+        auto source = texture.texture.point;
+        if (area_scaler) {
+          status = area_scaler->resize(source, stream.get());
+          if (status) {
+            return status;
+          }
+          source = area_scaler->texture();
+        }
         if (buffer_format == platf::pix_fmt_e::nv12) {
-          status = sws.convert_nv12(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
+          status = sws.convert_nv12(base, base + pitch * output_height, pitch, pitch, source, stream.get());
         } else if (buffer_format == platf::pix_fmt_e::p010) {
-          status = sws.convert_p010(base, base + pitch * output_height, pitch, pitch, texture.texture.point, stream.get());
+          status = sws.convert_p010(base, base + pitch * output_height, pitch, pitch, source, stream.get());
         } else if (buffer_format == platf::pix_fmt_e::yuv444p16) {
-          status = sws.convert_yuv444_10bit(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+          status = sws.convert_yuv444_10bit(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, source, stream.get());
         } else {
-          status = sws.convert_yuv444(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, texture.texture.point, stream.get());
+          status = sws.convert_yuv444(base, base + pitch * output_height, base + pitch * output_height * 2, pitch, source, stream.get());
         }
       }
       if (status) {
@@ -963,6 +983,7 @@ namespace cuda {
 
     std::unique_ptr<::nvenc::nvenc_encoder> encoder;
     sws_t sws;
+    std::unique_ptr<area_scaler_t> area_scaler;
     stream_t stream;
     CUcontext context = nullptr;
     CUdeviceptr surface = 0;
