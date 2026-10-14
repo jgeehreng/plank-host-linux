@@ -1,536 +1,114 @@
-<div align="center">
-  <img
-    src="sunshine.svg"
-    alt="Sunshine icon"
-    width="256"
-/>
-  <h1 align="center">Sunshine</h1>
-  <h4 align="center">Self-hosted game stream host for Moonlight.</h4>
-</div>
+# PLANK Linux Host
 
-<div align="center">
-  <a href="https://github.com/LizardByte/Sunshine"><img src="https://img.shields.io/github/stars/lizardbyte/sunshine.svg?logo=github&style=for-the-badge" alt="GitHub stars"></a>
-  <a href="https://github.com/LizardByte/Sunshine/releases/latest"><img src="https://img.shields.io/github/downloads/lizardbyte/sunshine/total.svg?style=for-the-badge&logo=github" alt="GitHub Releases"></a>
-  <a href="https://hub.docker.com/r/lizardbyte/sunshine"><img src="https://img.shields.io/docker/pulls/lizardbyte/sunshine.svg?style=for-the-badge&logo=docker" alt="Docker"></a>
-  <a href="https://github.com/LizardByte/Sunshine/pkgs/container/sunshine"><img src="https://img.shields.io/badge/dynamic/json.svg?url=https%3A%2F%2Fipitio.github.io%2Fbackage%2FLizardByte%2FSunshine%2Fsunshine.json&query=%24.downloads&label=ghcr%20pulls&style=for-the-badge&logo=github" alt="GHCR"></a>
-  <a href="https://flathub.org/apps/dev.lizardbyte.app.Sunshine"><img src="https://img.shields.io/flathub/downloads/dev.lizardbyte.app.Sunshine.svg?style=for-the-badge&logo=flathub" alt="Flathub installs"></a>
-  <a href="https://flathub.org/apps/dev.lizardbyte.app.Sunshine"><img src="https://img.shields.io/flathub/v/dev.lizardbyte.app.Sunshine.svg?style=for-the-badge&logo=flathub" alt="Flathub Version"></a>
-  <a href="https://github.com/microsoft/winget-pkgs/tree/master/manifests/l/LizardByte/Sunshine"><img src="https://img.shields.io/winget/v/LizardByte.Sunshine.svg?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAHuSURBVFhH7ZfNTtRQGIYZiMDwN/IrCAqIhMSNKxcmymVwG+5dcDVsWHgDrtxwCYQVl+BChzDEwSnPY+eQ0sxoOz1mQuBNnpyvTdvz9jun5/SrjfxnJUkyQbMEz2ELduF1l0YUA3QyTrMAa2AnPtyOXsELeAYNyKtV2EC3k3lYgTOwg09ghy/BTp7CKBRV844BOpmmMV2+ySb4BmInG7AKY7AHH+EYqqhZo9PPBG/BVDlOizAD/XQFmnoPXzxRQX8M/CCYS48L6RIc4ygGHK9WGg9HZSZMUNRPVwNJGg5Hg2Qgqh4N3FsDsb6EmgYm07iwwvUxstdxJTwgmILf4CfZ6bb5OHANX8GN5x20IVxnG8ge94pt2xpwU3GnCwayF4Q2G2vgFLzHndFzQdk4q77nNfCdwL28qNyMtmEf3A1/QV5FjDiPWo5jrwf8TWZChTlgJvL4F9QL50/A43qVidTvLcuoM2wDQ1+IkgefgUpLcYwMVBqCKNJA2b0gKNocOIITOIef8C/F/CdMbh/GklynsSawKLHS8d9/B1x2LUqsfFyy3TMsWj5A1cLkotDbYO4JjWWZlZEGv8EbOIR1CAVN2eG8W5oNKgxaeC6DmTJjZs7ixUxpznLPLT+v4sXpoMLcLI3mzFSonDXIEI/M3QCIO4YuimBJ/gAAAABJRU5ErkJggg==" alt="Winget Version"></a>
-  <a href="https://github.com/LizardByte/Sunshine/actions/workflows/ci.yml?query=branch%3Amaster"><img src="https://img.shields.io/github/actions/workflow/status/lizardbyte/sunshine/ci.yml.svg?branch=master&label=CI%20build&logo=github&style=for-the-badge" alt="GitHub Workflow Status (CI)"></a>
-  <a href="https://github.com/LizardByte/Sunshine/actions/workflows/localize.yml?query=branch%3Amaster"><img src="https://img.shields.io/github/actions/workflow/status/lizardbyte/sunshine/localize.yml.svg?branch=master&label=localize%20build&logo=github&style=for-the-badge" alt="GitHub Workflow Status (localize)"></a>
-  <a href="https://codecov.io/gh/LizardByte/Sunshine"><img src="https://img.shields.io/endpoint.svg?url=https%3A%2F%2Fapp.lizardbyte.dev%2Fdashboard%2Fshields%2Fcodecov%2FSunshine.json&style=for-the-badge&logo=codecov" alt="Codecov"></a>
-  <a href="https://sonarcloud.io/project/overview?id=LizardByte_Sunshine"><img src="https://img.shields.io/sonar/quality_gate/LizardByte_Sunshine.svg?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarqubecloud&label=sonarcloud" alt="SonarCloud"></a>
-</div>
+PLANK Linux Host makes a Linux workstation available to PLANK Clients on Ubuntu
+and macOS. It is designed for low-latency remote desktop and color-sensitive
+creative applications, including workstations used both at a physical desk and
+remotely.
 
-## ℹ️ About
+This repository contains the maintained Linux Host source, derived from
+Sunshine. The [main PLANK repository](https://github.com/instinctual/plank)
+provides its native transport, pinned dependencies, installation integration,
+releases and qualification tests.
 
-Sunshine is a self-hosted game stream host for Moonlight.
-Offering low-latency, cloud gaming server capabilities with support for AMD, Intel, and Nvidia GPUs for hardware
-encoding. Software encoding is also available. You can connect to Sunshine from any Moonlight client on a variety of
-devices. A web UI is provided to allow configuration, and client pairing, from your favorite web browser. Pair from
-the local server or any mobile device.
+**The macOS Host is a separate native implementation in
+[`apps/host/macos/`](https://github.com/instinctual/plank/tree/main/apps/host/macos)
+of the main repository. It is not built from this Linux Host fork.**
 
-LizardByte has the full documentation hosted on [Read the Docs](https://docs.lizardbyte.dev/projects/sunshine)
+[Downloads](https://github.com/instinctual/plank/releases) ·
+[Documentation](https://github.com/instinctual/plank/blob/main/docs/README.md) ·
+[Build from source](https://github.com/instinctual/plank/blob/main/docs/development/build/from-source.md)
 
-* [Stable Docs](https://docs.lizardbyte.dev/projects/sunshine/latest/)
-* [Beta Docs](https://docs.lizardbyte.dev/projects/sunshine/master/)
+## Platform and capabilities
 
-## 🎮 Feature Compatibility
+The Linux build and hardware qualification baseline is **Rocky Linux 9.7,
+x86-64, with NVIDIA graphics and an X11 desktop**, packaged for the RHEL 9 family.
+Other operating systems, capture stacks and GPU vendors present in inherited
+source are not automatically supported PLANK configurations.
 
-<table>
-    <caption id="gamepad_emulation">Gamepad Emulation</caption>
-    <tr>
-        <th>Feature</th>
-        <th>FreeBSD</th>
-        <th>Linux</th>
-        <th>macOS</th>
-        <th>Windows</th>
-    </tr>
-    <tr>
-        <td colspan="5" align="center">
-        What type of gamepads can be emulated on the host.<br>
-        Clients may support other gamepads.
-        </td>
-    </tr>
-    <tr>
-        <td>Generic</td>
-        <td>🟡<sup>1</sup></td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>DualShock / DS4 (PlayStation 4)</td>
-        <td>🟡<sup>1</sup></td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>DualSense / DS5 (PlayStation 5)</td>
-        <td>🟡<sup>1</sup></td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>Nintendo Switch Pro</td>
-        <td>🟡<sup>1</sup></td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>Xbox 360</td>
-        <td>🟡<sup>1</sup></td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>Xbox One</td>
-        <td>🟡<sup>1</sup></td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>Xbox Series</td>
-        <td>🟡<sup>1</sup></td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-    </tr>
-</table>
+- **Capture:** NvFBC for the established 8-bit source path, and experimental
+  native X11/XShm capture for a properly configured 10-bit desktop.
+- **Encoding:** software x264 and direct NVIDIA NVENC paths, selected by the
+  Client's per-bookmark profile. Supported choices include H.264/HEVC and
+  8/10-bit 4:4:4 workflows; each encoder has its own format and resolution limits.
+- **Color:** full-range RGB-identity 4:4:4 profiles and explicit profile-specific
+  conversion. Encoding an NvFBC capture as 10-bit does not turn its 8-bit source
+  into native 10-bit capture. H.264 10-bit uses x264, not NVENC.
+- **Displays:** physical and virtual/headless layouts, supported multi-display
+  canvases, and authenticated layout changes for remote sessions.
+- **Input:** keyboard, absolute mouse positioning, buttons, scrolling,
+  normalized pen input and raw-HID Wacom forwarding. The Linux tablet path
+  supports pressure and application features such as Flame Tablet Margins on
+  qualified devices.
+- **Desktop access:** OS-account authentication through PAM, desktop ownership
+  checks, session takeover, and login/logout recovery.
+- **Audio and clipboard:** Host audio streaming and bidirectional text clipboard
+  synchronization.
+- **Transport:** PLANK's native encrypted QUIC connection, with Kyber/Kymux
+  media transport and RaptorQ forward error correction.
 
-> [!NOTE]
-> <sup>1</sup> Missing motion, touchpad input, battery state, RGB LEDs, adaptive triggers, and raw HID output reports.
+Features require a compatible PLANK Client and qualified hardware. Consult the
+[acceptance criteria](https://github.com/instinctual/plank/blob/main/docs/development/acceptance-criteria.md)
+rather than assuming every NVIDIA GPU or Wacom model behaves identically.
 
-<table>
-    <caption id="encoding_api">Encoding API</caption>
-    <tr>
-        <th>Encoding API</th>
-        <th>GPU Vendor</th>
-        <th>FreeBSD</th>
-        <th>Linux</th>
-        <th>macOS</th>
-        <th>Windows</th>
-    </tr>
-    <tr>
-        <td>AMF</td>
-        <td>AMD</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>Media Foundation</td>
-        <td>Qualcomm</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>NVENC</td>
-        <td>NVIDIA</td>
-        <td>➖</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>QuickSync</td>
-        <td>Intel</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td rowspan="3">VAAPI</td>
-        <td>AMD</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>Intel</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>NVIDIA</td>
-        <td>➖</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td rowspan="2">Video Toolbox</td>
-        <td>Apple</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>Intel</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td rowspan="3">Vulkan Video</td>
-        <td>AMD</td>
-        <td>🟡</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>Intel</td>
-        <td>🟡</td>
-        <td>🟡</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>NVIDIA</td>
-        <td>➖</td>
-        <td>🟡</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>Software</td>
-        <td>Any</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-    </tr>
-</table>
+## Install and configure
 
-<table>
-    <caption id="screen_capture">Screen Capture</caption>
-    <tr>
-        <th>Capture Method</th>
-        <th>FreeBSD</th>
-        <th>Linux</th>
-        <th>macOS</th>
-        <th>Windows</th>
-    </tr>
-    <tr>
-        <td>DXGI Desktop Duplication</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>KMS/DRM</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>NvFBC (X11 only)</td>
-        <td>➖</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>ScreenCaptureKit</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>Wayland (wlroots)</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>Windows.Graphics.Capture</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>🟡</td>
-    </tr>
-    <tr>
-        <td>&nbsp;&nbsp;↳ Portable</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>&nbsp;&nbsp;↳ Service</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>➖</td>
-        <td>❌</td>
-    </tr>
-    <tr>
-        <td>X11</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>XDG Desktop Portal</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-    <tr>
-        <td>KWin Screencast</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>➖</td>
-        <td>➖</td>
-    </tr>
-</table>
+Download the RPM from [PLANK releases](https://github.com/instinctual/plank/releases).
+Install it using `sudo dnf install ./PACKAGE.rpm`, replacing `PACKAGE.rpm` with
+the downloaded filename. Follow the release's Host/Client compatibility notes.
 
-<table>
-    <caption id="capture_encoding_compat">Capture → Encoding Compatibility (Linux/FreeBSD)</caption>
-    <tr>
-        <th>Capture Method</th>
-        <th>VAAPI</th>
-        <th>Vulkan Video</th>
-        <th>NVENC (CUDA)</th>
-        <th>Software</th>
-    </tr>
-    <tr>
-        <td>KMS/DRM</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>NvFBC</td>
-        <td>❌</td>
-        <td>❌</td>
-        <td>✅</td>
-        <td>❌</td>
-    </tr>
-    <tr>
-        <td>Wayland (wlroots)</td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>X11</td>
-        <td>✅</td>
-        <td>❌</td>
-        <td>✅</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>XDG Desktop Portal</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-    </tr>
-    <tr>
-        <td>KWin Screencast</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-        <td>✅</td>
-    </tr>
-</table>
+Administrator configuration is `/etc/plank/host.conf`. The
+[documented Linux template](https://github.com/instinctual/plank/blob/main/packaging/host/linux/config/plank-host.conf)
+lists supported settings. Capture source, encoding profile, session display
+layout and bitrate are chosen in the Client bookmark, not through a Sunshine
+WebUI.
 
-**Legend:** ✅ Supported | 🟡 Partial Support | ❌ Not Yet Supported | ➖ Not Applicable
+For a hybrid physical/remote workstation, retain
+`[display] startup_layout = physical`. For headless startup, use `virtual`.
+These select the startup display policy, not a permanent restriction on the
+Client's session layout.
 
-## 🖥️ System Requirements
+The default Host port is **28989 on TCP and UDP**. Provide the required LAN,
+VPN or forwarding path and firewall policy yourself. PLANK does not configure
+UPnP, provide NAT traversal, or require a private broker/relay product.
 
-> [!WARNING]
-> These tables are a work in progress. Do not purchase hardware based on this information.
+Users authenticate with their workstation accounts through `/etc/pam.d/plank-host`.
+PAM/SSSD and administrator policy determine account access; root login is disabled
+by default. Authorization does not bypass ownership of an existing desktop.
+Privileged authentication and system integration are separated from the media
+worker; see the parent security documentation for the exact boundaries.
 
-<table>
-    <caption id="minimum_requirements">Minimum Requirements</caption>
-    <tr>
-        <th>Component</th>
-        <th>Requirement</th>
-    </tr>
-    <tr>
-        <td rowspan="3">GPU</td>
-        <td>AMD: VCE 1.0 or higher, see: <a href="https://github.com/obsproject/obs-amd-encoder/wiki/Hardware-Support">obs-amd hardware support</a></td>
-    </tr>
-    <tr>
-        <td>
-            Intel:<br>
-            &nbsp;&nbsp;FreeBSD/Linux: VAAPI-compatible, see: <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/linuxmedia-vaapi.html">VAAPI hardware support</a><br>
-            &nbsp;&nbsp;Windows: Skylake or newer with QuickSync encoding support
-        </td>
-    </tr>
-    <tr>
-        <td>Nvidia: NVENC enabled cards, see: <a href="https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new">nvenc support matrix</a></td>
-    </tr>
-    <tr>
-        <td rowspan="2">CPU</td>
-        <td>AMD: Ryzen 3 or higher</td>
-    </tr>
-    <tr>
-        <td>Intel: Core i3 or higher</td>
-    </tr>
-    <tr>
-        <td>RAM</td>
-        <td>4GB or more</td>
-    </tr>
-    <tr>
-        <td rowspan="6">OS</td>
-        <td>FreeBSD: 15.1+</td>
-    </tr>
-    <tr>
-        <td>Linux/Debian: 13+ (trixie)</td>
-    </tr>
-    <tr>
-        <td>Linux/Fedora: 43+</td>
-    </tr>
-    <tr>
-        <td>Linux/Ubuntu: 22.04+ (jammy)</td>
-    </tr>
-    <tr>
-        <td>macOS: 14.2+</td>
-    </tr>
-    <tr>
-        <td>Windows: 11+</td>
-    </tr>
-    <tr>
-        <td rowspan="2">Network</td>
-        <td>Host: 5GHz, 802.11ac</td>
-    </tr>
-    <tr>
-        <td>Client: 5GHz, 802.11ac</td>
-    </tr>
-</table>
+Runtime identity/state lives separately from configuration under `/var/lib/plank/`.
+Product logs are under `/var/log/plank/` and require elevated access. Remove the
+package with `sudo dnf remove plank-host`; ordinary removal is not a purge of
+retained configuration and state.
 
-<table>
-    <caption id="4k_suggestions">4k Suggestions</caption>
-    <tr>
-        <th>Component</th>
-        <th>Requirement</th>
-    </tr>
-    <tr>
-        <td rowspan="3">GPU</td>
-        <td>AMD: Video Coding Engine 3.1 or higher</td>
-    </tr>
-    <tr>
-        <td>
-            Intel:<br>
-            &nbsp;&nbsp;FreeBSD/Linux: HD Graphics 510 or higher<br>
-            &nbsp;&nbsp;Windows: Skylake or newer with QuickSync encoding support
-        </td>
-    </tr>
-    <tr>
-        <td>
-            Nvidia:<br>
-            &nbsp;&nbsp;FreeBSD/Linux: GeForce RTX 2000 series or higher<br>
-            &nbsp;&nbsp;Windows: Geforce GTX 1080 or higher
-        </td>
-    </tr>
-    <tr>
-        <td rowspan="2">CPU</td>
-        <td>AMD: Ryzen 5 or higher</td>
-    </tr>
-    <tr>
-        <td>Intel: Core i5 or higher</td>
-    </tr>
-    <tr>
-        <td rowspan="2">Network</td>
-        <td>Host: CAT5e ethernet or better</td>
-    </tr>
-    <tr>
-        <td>Client: CAT5e ethernet or better</td>
-    </tr>
-</table>
+## Building and contributing
 
-<table>
-    <caption id="hdr_suggestions">HDR Suggestions</caption>
-    <tr>
-        <th>Component</th>
-        <th>Requirement</th>
-    </tr>
-    <tr>
-        <td rowspan="3">GPU</td>
-        <td>AMD: Video Coding Engine 3.4 or higher</td>
-    </tr>
-    <tr>
-        <td>Intel: HD Graphics 730 or higher</td>
-    </tr>
-    <tr>
-        <td>Nvidia: Pascal-based GPU (GTX 10-series) or higher</td>
-    </tr>
-    <tr>
-        <td rowspan="2">CPU</td>
-        <td>AMD: Ryzen 5 or higher</td>
-    </tr>
-    <tr>
-        <td>Intel: Core i5 or higher</td>
-    </tr>
-    <tr>
-        <td rowspan="2">Network</td>
-        <td>Host: CAT5e ethernet or better</td>
-    </tr>
-    <tr>
-        <td>Client: CAT5e ethernet or better</td>
-    </tr>
-</table>
+Build from the [parent PLANK repository](https://github.com/instinctual/plank),
+where this component is pinned at `apps/host/linux/`. Start with:
 
-## ❓ Support
+- [Building from source](https://github.com/instinctual/plank/blob/main/docs/development/build/from-source.md).
+- [Linux builder bootstrap](https://github.com/instinctual/plank/blob/main/docs/development/build/builder-vm-bootstrap.md).
+- [Release build runbook](https://github.com/instinctual/plank/blob/main/docs/development/build/release-build-runbook.md).
 
-Our support methods are listed in our [LizardByte Docs](https://docs.lizardbyte.dev/latest/about/support.html).
+The parent owns the required dependency patches, native transport build,
+packaging and hardware tests. An upstream Sunshine build or a bare standalone
+CMake invocation is not the complete PLANK package workflow. Do not substitute
+unpatched dependency sources just because they compile.
 
-## 💲 Sponsors and Supporters
+Linux Host changes belong here; shared protocol, packaging and cross-platform
+changes also need the parent repository. Follow its
+[contributor guide](https://github.com/instinctual/plank/blob/main/CONTRIBUTING.md)
+and coordinate the Host gitlink update. Report PLANK-specific issues to PLANK,
+not the upstream Sunshine maintainers.
 
-<p align="center">
-  <img src='https://cdn.jsdelivr.net/gh/LizardByte/contributors@dist/sponsors.svg' alt="Sponsors"/>
-</p>
+## Relationship to Sunshine
 
-## 👥 Contributors
+PLANK retains Sunshine's history and credits, but no longer uses its GameStream
+transport, PIN pairing, WebUI, gamepad support or UPnP workflow. A stock Moonlight
+Client is not a supported peer for this Host.
 
-Thank you to all the contributors who have helped make Sunshine better!
-
-### GitHub
-
-<p align="center">
-  <img src='https://cdn.jsdelivr.net/gh/LizardByte/contributors@dist/github.Sunshine.svg' alt="GitHub contributors"/>
-</p>
-
-### CrowdIn
-
-<p align="center">
-  <img src='https://cdn.jsdelivr.net/gh/LizardByte/contributors@dist/crowdin.606145.svg' alt="CrowdIn contributors"/>
-</p>
-
-<div class="section_buttons">
-
-| Previous |                                       Next |
-|:---------|-------------------------------------------:|
-|          | [Getting Started](docs/getting_started.md) |
-
-</div>
-
-<details style="display: none;">
-  <summary></summary>
-  [TOC]
-</details>
+Thanks to [Sunshine](https://github.com/LizardByte/Sunshine) and its contributors.
+See [LICENSE](LICENSE) and the notices in individual files and dependencies.
+The parent project's native transport is AGPL-3.0-or-later and retains its own
+license.

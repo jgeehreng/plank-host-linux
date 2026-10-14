@@ -11,15 +11,16 @@ namespace topology = plank::topology;
 TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_EQ(topology::protocol_version, 13U);
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
-  EXPECT_EQ(topology::feature_flags, 0x47FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x247FFFFU);
   EXPECT_NE(topology::feature_flags & topology::feature_clipboard_sync, 0U);
 #else
-  EXPECT_EQ(topology::feature_flags, 0x7FFFFU);
+  EXPECT_EQ(topology::feature_flags, 0x207FFFFU);
   EXPECT_EQ(topology::feature_flags & topology::feature_clipboard_sync, 0U);
 #endif
   EXPECT_NE(topology::feature_flags & topology::feature_nvfbc_hevc10_nvenc, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_fixed_transport_mtu, 0U);
   EXPECT_NE(topology::feature_flags & topology::feature_session_takeover, 0U);
+  EXPECT_NE(topology::feature_flags & topology::feature_virtual_primary_connector, 0U);
   EXPECT_TRUE(topology::valid_virtual_mode("1024x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("2560x2160"));
   EXPECT_TRUE(topology::valid_virtual_mode("4096x2160"));
@@ -35,6 +36,26 @@ TEST(PlankTopology, PublishesVersionThirteenFeatureContract) {
   EXPECT_TRUE(topology::valid_virtual_layout_modes(
     "dual-horizontal", "4096x2160", "4096x2160"
   ));
+}
+
+TEST(PlankTopology, BindsFirstVirtualConnectorOnlyWhenNegotiated) {
+  using topology::feature_virtual_primary_connector;
+  using topology::valid_virtual_primary_binding;
+  using topology::virtual_primary_connector_matches;
+  EXPECT_TRUE(valid_virtual_primary_binding("dual-horizontal", "single", -1, 0));
+  EXPECT_FALSE(valid_virtual_primary_binding("dual-horizontal", "single", 1, 0));
+  EXPECT_TRUE(valid_virtual_primary_binding("dual-horizontal", "single", 1,
+                                            feature_virtual_primary_connector));
+  EXPECT_FALSE(valid_virtual_primary_binding("dual-horizontal", "single", 2,
+                                             feature_virtual_primary_connector));
+  EXPECT_FALSE(valid_virtual_primary_binding("single", "single", 1,
+                                             feature_virtual_primary_connector));
+  EXPECT_FALSE(valid_virtual_primary_binding("dual-horizontal", "physical", 1,
+                                             feature_virtual_primary_connector));
+  EXPECT_TRUE(virtual_primary_connector_matches("single", 1, 2, "x11:DP-0"));
+  EXPECT_FALSE(virtual_primary_connector_matches("single", 1, 2, "x11:DP-2"));
+  EXPECT_TRUE(virtual_primary_connector_matches("physical", 1, 2, "x11:DP-2"));
+  EXPECT_TRUE(virtual_primary_connector_matches("single", -1, 2, ""));
 }
 
 TEST(PlankTopology, AcceptsOnlyValidFixedQuicPayloadCeilings) {

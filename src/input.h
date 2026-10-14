@@ -8,11 +8,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <string_view>
+#include <string>
 
 // local includes
 #include "platform/common.h"
 #include "thread_safe.h"
+
+#ifdef SUNSHINE_TESTS
+namespace raw_hid {
+  class tablet_t;
+}
+#endif
 
 namespace input {
   struct input_t;
@@ -32,21 +38,6 @@ namespace input {
   void reset(std::shared_ptr<input_t> &input, std::uint64_t connection_id);
 
   /**
-   * @brief Destroy every retained input session.
-   *
-   * Retained raw-HID tablet endpoints survive a paused transport connection so they can be reused on resume. Call
-   * this when the streamed application or all streaming sessions are explicitly terminated.
-   */
-  void terminate_retained_input();
-
-  /**
-   * @brief Destroy input state retained for one paired client.
-   *
-   * @param session_id Stable paired-client identity used by alloc().
-   */
-  void terminate_retained_input(std::string_view session_id);
-
-  /**
    * @brief Queue a raw input message for platform passthrough.
    */
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data);
@@ -64,6 +55,9 @@ namespace input {
   /**
    * @brief Initialize global input resources and platform backends.
    *
+   * Retained tablet endpoints live until this subsystem shuts down, independently
+   * of stream reservations. Reset releases held input without deleting devices.
+   *
    * @return Cleanup handle for initialized input resources, or null if none are required.
    */
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init();
@@ -72,7 +66,7 @@ namespace input {
    * @brief Allocate and initialize platform input state for a stream.
    *
    * @param mail Mailbox used to exchange messages with worker threads.
-   * @param session_id Stable paired-client identity shared by launch and resume connections.
+   * @param session_id Internal desktop identity shared by launch and resume connections.
    * @param connection_id Receives the lease identifying this stream binding.
    * @return Shared input state bound to the stream mailbox.
    */
@@ -97,6 +91,9 @@ namespace input {
      */
     std::uint16_t raw_hid_generation(const std::shared_ptr<input_t> &input);
 
+    /** @brief Access a retained tablet while no input receiver is running. */
+    raw_hid::tablet_t &raw_tablet(const std::shared_ptr<input_t> &input);
+
     /**
      * @brief Return whether a test session currently exposes normalized pen fallback.
      */
@@ -113,9 +110,24 @@ namespace input {
     void handle_keyboard(const std::shared_ptr<input_t> &input, std::uint16_t key_code, bool release);
 
     /**
+     * @brief Submit one mouse-button transition directly for lifecycle tests.
+     *
+     * @param input Retained test input session.
+     * @param button Moonlight button identifier.
+     * @param release True for button release, false for button press.
+     */
+    void handle_mouse_button(const std::shared_ptr<input_t> &input, std::uint8_t button, bool release);
+
+    /**
      * @brief Return the last key submitted to the fake platform keyboard.
      */
     std::uint16_t last_keyboard_code();
+
+    /** @brief Hold the production input barrier for a deterministic concurrency test. */
+    void with_input_lock(const std::function<void()> &action);
+
+    /** @brief Access the fake per-client backend while no input thread is running. */
+    platf::client_input_t *client_context(const std::shared_ptr<input_t> &input);
   }  // namespace testing
 #endif
 

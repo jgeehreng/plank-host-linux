@@ -177,6 +177,26 @@ TEST(SessionContext, RejectsMalformedDisplayRequests) {
   EXPECT_FALSE(session::parse_display_request(truncated));
 }
 
+TEST(SessionContext, RoundTripsVirtualPrimaryAndRejectsInvalidIndices) {
+  session::display_request_t request {session::display_request_t::action_t::acquire,
+    "dual-horizontal", "1920x1200", "2560x1440", 1000, 1};
+  const auto parsed = session::parse_display_request(session::display_request_message(request));
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->primary_output, 1);
+  for (int invalid : {-2, 2, 100}) {
+    request.primary_output = invalid;
+    EXPECT_TRUE(session::display_request_message(request).empty());
+  }
+  request.primary_output = 1;
+  request.layout = "single";
+  request.mode_2.clear();
+  EXPECT_TRUE(session::display_request_message(request).empty());
+  request.action = session::display_request_t::action_t::release;
+  request.layout.clear();
+  request.mode_1.clear();
+  EXPECT_TRUE(session::display_request_message(request).empty());
+}
+
 TEST(SessionContext, RoundTripsTemporaryRuntimeDisplayState) {
   const session::runtime_display_state_t state {
     "dual-horizontal", "3840x2160", "1280x2160", 1000

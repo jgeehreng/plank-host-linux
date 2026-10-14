@@ -110,6 +110,11 @@ TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossFocusAndTransportResume) {
 
   const auto first_mail = std::make_shared<safe::mail_raw_t>();
   raw_hid::tablet_t tablet {first_mail->queue<std::vector<std::uint8_t>>("raw-hid-test")};
+  // This empty collection tests UHID lifecycle, not evdev contacts. It has no
+  // input node to inspect; contact syscall behavior has its own fixtures.
+  tablet.set_contact_cleanup_for_test([] {
+    return true;
+  });
   PLANK_RAW_HID_DEVICE_MESSAGE device {};
   device.interfaceCount = util::endian::little<std::uint16_t>(1);
   device.bus = util::endian::little<std::uint16_t>(3);
@@ -118,8 +123,8 @@ TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossFocusAndTransportResume) {
   std::memcpy(device.name, "PLANK Wacom test", sizeof("PLANK Wacom test"));
   std::memcpy(device.unique, "stable-tablet", 13);
 
-  // Minimal valid HID application collection. The reconnect assertion is
-  // based on the synchronous UHID endpoint creation epoch, not udev timing.
+  // Minimal valid HID application collection. Reuse requires the kernel's
+  // UHID_START acknowledgement, not just successful endpoint creation.
   const std::uint8_t descriptor[] {
     0x05, 0x01,  // Usage Page (Generic Desktop)
     0x09, 0x02,  // Usage (Mouse)
@@ -131,6 +136,16 @@ TEST(RawHidTablet, ReusesIdenticalEndpointsAcrossFocusAndTransportResume) {
   ASSERT_TRUE(tablet.handle(make_frame(PLANK_RAW_HID_DESCRIPTOR, 0, 7, descriptor, sizeof(descriptor))));
   const auto initial_epoch = tablet.endpoint_epoch();
   ASSERT_GT(initial_epoch, 0);
+
+  const auto attached = first_mail->queue<std::vector<std::uint8_t>>("raw-hid-test")->pop(std::chrono::seconds(5));
+  ASSERT_TRUE(attached) << "Kernel did not finish starting the test endpoint";
+  ASSERT_GE(attached->size(), sizeof(PLANK_RAW_HID_WIRE_HEADER) + sizeof(std::int32_t));
+  PLANK_RAW_HID_WIRE_HEADER ack {};
+  std::memcpy(&ack, attached->data(), sizeof(ack));
+  ASSERT_EQ(util::endian::little(ack.type), PLANK_RAW_HID_ATTACH_RESULT);
+  std::int32_t status;
+  std::memcpy(&status, attached->data() + sizeof(ack), sizeof(status));
+  ASSERT_EQ(status, 0);
 
   ASSERT_TRUE(tablet.handle(make_frame(PLANK_RAW_HID_SUSPEND, 0, 7, nullptr, 0)));
   EXPECT_FALSE(tablet.handle(make_frame(PLANK_RAW_HID_SUSPEND, 1, 7, nullptr, 0)));

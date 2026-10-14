@@ -70,6 +70,23 @@ TEST(PamBrokerProtocol, RejectsMalformedAndOversizeFrames) {
   EXPECT_FALSE(auth::append_string(fields, std::string(auth::maximum_field_size + 1, 'x')));
 }
 
+TEST(PamBrokerProtocol, RoundTripsEmptyAndMaximumPayloads) {
+  for (const auto size : {std::size_t {0}, std::size_t {1}, auth::maximum_payload_size}) {
+    const auth::message_t original {
+      auth::message_type_e::result,
+      42,
+      std::vector<std::uint8_t>(size, 0xa5),
+    };
+    const auto frame = auth::encode_message(original);
+    ASSERT_EQ(frame.size(), sizeof(auth::wire_header_t) + size);
+    auth::message_t decoded;
+    ASSERT_TRUE(auth::decode_message(frame, decoded));
+    EXPECT_EQ(decoded.payload, original.payload);
+    EXPECT_EQ(decoded.type, original.type);
+    EXPECT_EQ(decoded.transaction_id, original.transaction_id);
+  }
+}
+
 TEST(PamBrokerProtocol, ReadsAndWritesStreamFrames) {
   std::array<int, 2> sockets {};
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets.data()), 0);
@@ -138,7 +155,7 @@ TEST(PamBrokerClient, AdvancesChallengeAndSuccess) {
     EXPECT_EQ(response.type, auth::message_type_e::response);
     EXPECT_EQ(response.transaction_id, transaction_id);
     std::size_t offset = 0;
-    std::uint32_t count;
+    std::uint32_t count = 0;
     std::string secret;
     EXPECT_TRUE(auth::read_integer(response.payload, offset, count));
     EXPECT_EQ(count, 1);

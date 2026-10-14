@@ -4,6 +4,8 @@
  */
 #pragma once
 
+#include "pam_client.h"
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -14,8 +16,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-#include "pam_client.h"
 
 namespace plank::auth {
   /**
@@ -36,8 +36,7 @@ namespace plank::auth {
      * @param remote_host Auditable client address.
      * @return First challenge or terminal result.
      */
-    virtual step_t begin(std::uint64_t transaction_id, std::string_view username,
-                         std::string_view remote_host) = 0;
+    virtual step_t begin(std::uint64_t transaction_id, std::string_view username, std::string_view remote_host) = 0;
 
     /**
      * @brief Submit responses for the last challenge.
@@ -46,6 +45,9 @@ namespace plank::auth {
      * @return Next challenge or terminal result.
      */
     virtual step_t respond(std::vector<std::string> responses) = 0;
+
+    /** @brief Request nonblocking, thread-safe cancellation of the pending operation. */
+    virtual void cancel() noexcept = 0;
   };
 
   /**
@@ -79,19 +81,17 @@ namespace plank::auth {
      * @param conversation_lifetime Maximum time between PAM responses.
      * @param token_lifetime Maximum token lifetime before stream ownership.
      */
-    web_auth_manager_t(conversation_factory_t factory, random_t random,
-                       now_t now = clock_t::now,
-                       std::chrono::seconds conversation_lifetime = std::chrono::seconds {120},
-                       std::chrono::seconds token_lifetime = std::chrono::seconds {300});
+    web_auth_manager_t(conversation_factory_t factory, random_t random, now_t now = clock_t::now, std::chrono::seconds conversation_lifetime = std::chrono::seconds {120}, std::chrono::seconds token_lifetime = std::chrono::seconds {300});
 
     /**
      * @brief Begin a PAM conversation for one TLS peer.
      *
      * @param username Requested account.
      * @param remote_host Normalized TLS peer address.
+     * @param cancellation Optional request-owner cancellation.
      * @return Challenge or terminal result.
      */
-    web_auth_step_t begin(std::string_view username, std::string_view remote_host);
+    web_auth_step_t begin(std::string_view username, std::string_view remote_host, std::stop_token cancellation = {});
 
     /**
      * @brief Advance an existing PAM conversation.
@@ -99,11 +99,10 @@ namespace plank::auth {
      * @param conversation_id Opaque conversation identifier.
      * @param remote_host Normalized TLS peer address; must match the creator.
      * @param responses One response per PAM message.
+     * @param cancellation Optional request-owner cancellation.
      * @return Next challenge or terminal result.
      */
-    web_auth_step_t respond(std::string_view conversation_id,
-                            std::string_view remote_host,
-                            std::vector<std::string> responses);
+    web_auth_step_t respond(std::string_view conversation_id, std::string_view remote_host, std::vector<std::string> responses, std::stop_token cancellation = {});
 
     /**
      * @brief Validate a session token for its originating peer.
@@ -121,8 +120,7 @@ namespace plank::auth {
      * @param remote_host Normalized TLS peer address.
      * @return Requested PAM account, or no value when authorization fails.
      */
-    std::optional<std::string> identity(std::string_view token,
-                                        std::string_view remote_host);
+    std::optional<std::string> identity(std::string_view token, std::string_view remote_host);
 
     /**
      * @brief Attach an authenticated PAM session to a stream.
@@ -135,15 +133,17 @@ namespace plank::auth {
      * @param remote_host Normalized TLS peer address.
      * @return Shared session lifetime handle, or null when unavailable.
      */
-    std::shared_ptr<conversation_i> claim(std::string_view token,
-                                          std::string_view remote_host);
+    std::shared_ptr<conversation_i> claim(std::string_view token, std::string_view remote_host);
 
     /**
-     * @brief Destroy a token and its open PAM session.
+     * @brief Revoke a token or cancel a pending conversation, including in-flight work.
      *
      * @param token Opaque bearer token.
      */
     void cancel(std::string_view token);
+
+    /** @brief Cancel all manager-owned conversations during worker shutdown. */
+    void cancel_all();
 
     /**
      * @brief Remove expired conversations and sessions.
@@ -157,6 +157,16 @@ namespace plank::auth {
       clock_t::time_point expires;  ///< Entry expiry.
       std::shared_ptr<conversation_i> conversation;  ///< Manager-owned broker connection before launch.
       std::weak_ptr<conversation_i> claimed_session;  ///< Session owned by active streams after launch.
+      bool busy = false;  ///< A begin/respond operation is running outside the mutex.
+      bool cancelled = false;  ///< Revoked entries cannot publish a late result.
+    };
+
+    using entry_ptr_t = std::shared_ptr<entry_t>;  ///< Stable identity while an operation is in flight.
+
+    /** @brief Defer cancellation/destruction until after the state lock is released. */
+    struct retired_t {
+      std::vector<entry_ptr_t> entries;  ///< Entries retired under the state lock.
+      ~retired_t();
     };
 
     /**
@@ -167,12 +177,13 @@ namespace plank::auth {
      * @param entry Conversation ownership.
      * @return Network-facing step.
      */
-    web_auth_step_t retain(step_t step, std::string id, entry_t entry);
+    web_auth_step_t retain(step_t step, const std::string &id, const entry_ptr_t &entry);
 
     /**
      * @brief Remove expired entries while the mutex is held.
+     * @param retired Collect entries for cleanup after unlocking.
      */
-    void expire_locked();
+    void expire_locked(retired_t &retired);
 
     conversation_factory_t factory_;  ///< PAM conversation factory.
     random_t random_;  ///< Secure opaque-string generator.
@@ -181,8 +192,8 @@ namespace plank::auth {
     std::chrono::seconds token_lifetime_;  ///< Authenticated token lifetime.
     std::uint64_t next_transaction_ = 1;  ///< Local broker correlation counter.
     std::mutex mutex_;  ///< Protects all maps and counters.
-    std::unordered_map<std::string, entry_t> conversations_;  ///< Pending PAM exchanges.
-    std::unordered_map<std::string, entry_t> tokens_;  ///< Authenticated PAM sessions.
+    std::unordered_map<std::string, entry_ptr_t> conversations_;  ///< Pending and in-flight PAM exchanges; both consume capacity.
+    std::unordered_map<std::string, entry_ptr_t> tokens_;  ///< Authenticated PAM sessions.
   };
 
   /**

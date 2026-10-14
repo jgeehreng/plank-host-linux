@@ -31,6 +31,7 @@ namespace plank::topology {
   constexpr std::uint32_t feature_authenticated_desktop_stage = 0x20000;
   constexpr std::uint32_t feature_worker_instance = 0x40000;
   constexpr std::uint32_t feature_clipboard_sync = 0x400000;
+  constexpr std::uint32_t feature_virtual_primary_connector = 0x2000000;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   constexpr std::uint32_t feature_platform_clipboard_sync = feature_clipboard_sync;
 #else
@@ -56,7 +57,54 @@ namespace plank::topology {
     feature_desktop_handoff_notice |
     feature_authenticated_desktop_stage |
     feature_worker_instance |
-    feature_platform_clipboard_sync;
+    feature_platform_clipboard_sync |
+    feature_virtual_primary_connector;
+
+  /**
+   * @brief Validate an optional left-to-right primary index for a virtual layout.
+   * @param layout Requested virtual layout.
+   * @param primary Left-to-right index, or -1 for existing connector order.
+   * @return True when the index exists in the requested layout.
+   */
+  constexpr bool valid_primary_output(std::string_view layout, int primary) {
+    return primary == -1 ||
+      (primary == 0 && (layout == "single" || layout == "dual-horizontal")) ||
+      (primary == 1 && layout == "dual-horizontal");
+  }
+
+  /**
+   * @brief Authorize connector binding only for a negotiated virtual-startup host.
+   * @param layout Requested virtual layout.
+   * @param startup_kind Concrete startup topology.
+   * @param primary Requested left-to-right primary index.
+   * @param client_features Client-advertised feature bits.
+   * @return True when the request preserves legacy behavior or is negotiated.
+   */
+  constexpr bool valid_virtual_primary_binding(std::string_view layout,
+                                               std::string_view startup_kind,
+                                               int primary,
+                                               std::uint32_t client_features) {
+    return valid_primary_output(layout, primary) &&
+      (primary == -1 ||
+       (startup_kind == "single" &&
+        (client_features & feature_virtual_primary_connector) != 0));
+  }
+
+  /**
+   * @brief Check that the first virtual connector occupies the requested side.
+   * @param startup_kind Concrete startup topology.
+   * @param primary Requested left-to-right primary index.
+   * @param output_count Number of live outputs.
+   * @param selected_id Connector ID at the requested index.
+   * @return True when no virtual binding is requested or DP-0 is selected.
+   */
+  constexpr bool virtual_primary_connector_matches(std::string_view startup_kind,
+                                                   int primary,
+                                                   std::size_t output_count,
+                                                   std::string_view selected_id) {
+    return startup_kind != "single" || primary < 0 ||
+      (static_cast<std::size_t>(primary) < output_count && selected_id == "x11:DP-0");
+  }
 
   constexpr bool valid_quic_udp_payload_mtu(std::uint32_t mtu) {
     return mtu >= 1200 && mtu <= 65527;

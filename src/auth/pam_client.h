@@ -4,12 +4,12 @@
  */
 #pragma once
 
+#include "pam_broker_protocol.h"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "pam_broker_protocol.h"
 
 namespace plank::auth {
   /**
@@ -37,8 +37,10 @@ namespace plank::auth {
   public:
     /**
      * @brief Create a disconnected PAM client.
+     * @param operation_timeout Whole-operation begin/respond budget.
      */
-    pam_client_t() = default;
+    explicit pam_client_t(std::chrono::milliseconds operation_timeout = std::chrono::seconds {30}):
+        operation_timeout_ {operation_timeout} {}
 
     /**
      * @brief Close the broker connection and PAM session.
@@ -59,9 +61,7 @@ namespace plank::auth {
      * @param tty Logical remote service terminal.
      * @return First PAM challenge or a terminal result.
      */
-    step_t begin(std::uint64_t transaction_id,
-                 std::string_view username, std::string_view remote_host,
-                 std::string_view tty);
+    step_t begin(std::uint64_t transaction_id, std::string_view username, std::string_view remote_host, std::string_view tty);
 
     /**
      * @brief Submit one response per preceding PAM message.
@@ -76,6 +76,9 @@ namespace plank::auth {
      */
     void close();
 
+    /** @brief Irrevocably cancel this conversation without blocking or racing socket reuse. */
+    void cancel() noexcept;
+
     /**
      * @brief Check whether this object owns a broker connection.
      *
@@ -89,9 +92,10 @@ namespace plank::auth {
      *
      * @param descriptor Connected test socket.
      * @param transaction_id Test transaction identifier.
+     * @param timeout Whole-operation budget for the test.
      * @return Client owning the supplied descriptor.
      */
-    static pam_client_t adopt_for_test(int descriptor, std::uint64_t transaction_id);
+    static pam_client_t adopt_for_test(int descriptor, std::uint64_t transaction_id, std::chrono::milliseconds timeout = std::chrono::seconds {30});
 
     /**
      * @brief Read one broker step in protocol unit tests.
@@ -104,14 +108,16 @@ namespace plank::auth {
   private:
     /**
      * @brief Read and decode the next broker challenge or result.
+     * @param context Shared send/read deadline and cancellation.
      *
      * @return Decoded step, or protocol denial on malformed input.
      */
-    step_t read_step();
+    step_t read_step(const io_context_t &context);
 
     int descriptor_ = -1;  ///< Connected Unix socket.
     std::uint64_t transaction_id_ = 0;  ///< Active transaction identifier.
     std::size_t expected_responses_ = 0;  ///< Entries required by the last challenge.
-    bool authenticated_ = false;  ///< Whether the broker opened the PAM session.
+    std::chrono::milliseconds operation_timeout_;  ///< One send/read/delegation budget, not per-byte timeouts.
+    std::stop_source cancellation_;  ///< Only cancel() may be invoked concurrently with an operation.
   };
 }  // namespace plank::auth

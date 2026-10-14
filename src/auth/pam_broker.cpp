@@ -3,30 +3,29 @@
  * @brief Privileged PLANK PAM conversation broker.
  */
 
-#include "pam_broker_protocol.h"
 #include "pam_broker_policy.h"
+#include "pam_broker_protocol.h"
+#include "pam_worker_watch.h"
 
 #include <cerrno>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <set>
+#include <security/pam_appl.h>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <vector>
-
-#include <fcntl.h>
-#include <security/pam_appl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 namespace auth = plank::auth;
 
@@ -37,8 +36,7 @@ namespace {
 
   volatile std::sig_atomic_t stopping = 0;  ///< Set by termination signals.
   volatile std::sig_atomic_t listening_descriptor = -1;  ///< Listener closed by the signal handler.
-  volatile std::sig_atomic_t child_exited = 0;  ///< Set when a PAM worker exits.
-  std::set<pid_t> children;  ///< Active per-session PAM worker processes.
+  auth::pam_workers_t children;  ///< Active workers and caller-disconnect cleanup watches.
 
   /**
    * @brief Own and close a POSIX file descriptor.
@@ -117,10 +115,8 @@ namespace {
    * @param payload Receives the bounded payload.
    * @return True when every message was valid.
    */
-  bool encode_challenge(const pam_message **messages, int message_count,
-                        std::vector<std::uint8_t> &payload) {
-    if (messages == nullptr || message_count <= 0 ||
-        message_count > static_cast<int>(auth::maximum_fields)) {
+  bool encode_challenge(const pam_message **messages, int message_count, std::vector<std::uint8_t> &payload) {
+    if (messages == nullptr || message_count <= 0 || message_count > static_cast<int>(auth::maximum_fields)) {
       return false;
     }
     auth::append_integer(payload, static_cast<std::uint32_t>(message_count));
@@ -129,8 +125,7 @@ namespace {
         return false;
       }
       const int style = messages[index]->msg_style;
-      if (style != PAM_PROMPT_ECHO_ON && style != PAM_PROMPT_ECHO_OFF &&
-          style != PAM_TEXT_INFO && style != PAM_ERROR_MSG) {
+      if (style != PAM_PROMPT_ECHO_ON && style != PAM_PROMPT_ECHO_OFF && style != PAM_TEXT_INFO && style != PAM_ERROR_MSG) {
         return false;
       }
       auth::append_integer(payload, static_cast<std::int32_t>(style));
@@ -149,13 +144,10 @@ namespace {
    * @param responses Receives decoded strings.
    * @return True when the payload was exact and bounded.
    */
-  bool decode_responses(std::span<const std::uint8_t> payload, int expected_count,
-                        std::vector<std::string> &responses) {
+  bool decode_responses(std::span<const std::uint8_t> payload, int expected_count, std::vector<std::string> &responses) {
     std::size_t offset = 0;
     std::uint32_t count;
-    if (!auth::read_integer(payload, offset, count) ||
-        count != static_cast<std::uint32_t>(expected_count) ||
-        count > auth::maximum_fields) {
+    if (!auth::read_integer(payload, offset, count) || count != static_cast<std::uint32_t>(expected_count) || count > auth::maximum_fields) {
       return false;
     }
     responses.reserve(count);
@@ -179,26 +171,23 @@ namespace {
    * @param application_data A @ref conversation_t pointer.
    * @return A PAM status code.
    */
-  int converse(int message_count, const pam_message **messages, pam_response **responses,
-               void *application_data) {
+  int converse(int message_count, const pam_message **messages, pam_response **responses, void *application_data) {
     if (responses == nullptr || application_data == nullptr) {
       return PAM_CONV_ERR;
     }
     auto &conversation = *static_cast<conversation_t *>(application_data);
     std::vector<std::uint8_t> challenge_payload;
-    if (!encode_challenge(messages, message_count, challenge_payload) ||
-        !auth::write_message(conversation.descriptor, {
-          auth::message_type_e::challenge,
-          conversation.transaction_id,
-          std::move(challenge_payload),
-        })) {
+    if (!encode_challenge(messages, message_count, challenge_payload) || !auth::write_message(conversation.descriptor, {
+                                                                                                                         auth::message_type_e::challenge,
+                                                                                                                         conversation.transaction_id,
+                                                                                                                         std::move(challenge_payload),
+                                                                                                                       })) {
       return PAM_CONV_ERR;
     }
 
     auth::message_t reply;
-    if (!auth::read_message(conversation.descriptor, reply) ||
-        reply.type != auth::message_type_e::response ||
-        reply.transaction_id != conversation.transaction_id) {
+    const auth::io_context_t human_response {auth::io_context_t::clock_t::now() + std::chrono::seconds {120}, {}};
+    if (!auth::read_message(conversation.descriptor, reply, human_response) || reply.type != auth::message_type_e::response || reply.transaction_id != conversation.transaction_id) {
       return PAM_CONV_ERR;
     }
     std::vector<std::string> decoded;
@@ -252,16 +241,15 @@ namespace {
    * @param pam_status PAM status code.
    * @return True when the result was sent.
    */
-  bool send_result(int descriptor, std::uint64_t transaction_id, auth::phase_e phase,
-                   int pam_status) {
+  bool send_result(int descriptor, std::uint64_t transaction_id, auth::phase_e phase, int pam_status) {
     std::vector<std::uint8_t> payload;
     auth::append_integer(payload, static_cast<std::uint16_t>(phase));
     auth::append_integer(payload, static_cast<std::int32_t>(pam_status));
     return auth::write_message(descriptor, {
-      auth::message_type_e::result,
-      transaction_id,
-      std::move(payload),
-    });
+                                             auth::message_type_e::result,
+                                             transaction_id,
+                                             std::move(payload),
+                                           });
   }
 
   /**
@@ -273,8 +261,7 @@ namespace {
    * @param tty Receives the logical service terminal.
    * @return True when exactly three valid fields were supplied.
    */
-  bool decode_begin(std::span<const std::uint8_t> payload, std::string &username,
-                    std::string &remote_host, std::string &tty) {
+  bool decode_begin(std::span<const std::uint8_t> payload, std::string &username, std::string &remote_host, std::string &tty) {
     std::size_t offset = 0;
     return auth::read_string(payload, offset, username) && !username.empty() &&
            username.size() <= 256 && auth::read_string(payload, offset, remote_host) &&
@@ -293,8 +280,7 @@ namespace {
    * @return PAM status.
    */
   template<typename Operation>
-  int run_phase(int descriptor, std::uint64_t transaction_id, auth::phase_e phase,
-                Operation operation) {
+  int run_phase(int descriptor, std::uint64_t transaction_id, auth::phase_e phase, Operation operation) {
     const int status = operation();
     if (status != PAM_SUCCESS) {
       send_result(descriptor, transaction_id, phase, status);
@@ -311,8 +297,7 @@ namespace {
   void serve_client(int descriptor, uid_t peer_uid, bool allow_root_login) {
     descriptor_t connection {descriptor};
     auth::message_t begin;
-    if (!auth::read_message(connection.get(), begin) ||
-        begin.type != auth::message_type_e::begin) {
+    if (!auth::read_message(connection.get(), begin) || begin.type != auth::message_type_e::begin) {
       return;
     }
 
@@ -340,37 +325,38 @@ namespace {
 
     bool credentials_established = false;
     bool session_open = false;
-    if (pam_set_item(handle, PAM_RHOST, remote_host.c_str()) != PAM_SUCCESS ||
-        pam_set_item(handle, PAM_TTY, tty.c_str()) != PAM_SUCCESS) {
+    if (pam_set_item(handle, PAM_RHOST, remote_host.c_str()) != PAM_SUCCESS || pam_set_item(handle, PAM_TTY, tty.c_str()) != PAM_SUCCESS) {
       status = PAM_SYSTEM_ERR;
       send_result(connection.get(), begin.transaction_id, auth::phase_e::start, status);
     } else {
-      status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::authenticate,
-                         [&]() { return pam_authenticate(handle, 0); });
+      status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::authenticate, [&]() {
+        return pam_authenticate(handle, 0);
+      });
     }
     if (status == PAM_SUCCESS) {
-      status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::account,
-                         [&]() { return pam_acct_mgmt(handle, 0); });
+      status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::account, [&]() {
+        return pam_acct_mgmt(handle, 0);
+      });
     }
     if (status == PAM_SUCCESS) {
-      status = run_phase(connection.get(), begin.transaction_id,
-                         auth::phase_e::establish_credentials,
-                         [&]() { return pam_setcred(handle, PAM_ESTABLISH_CRED); });
+      status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::establish_credentials, [&]() {
+        return pam_setcred(handle, PAM_ESTABLISH_CRED);
+      });
       credentials_established = status == PAM_SUCCESS;
     }
     if (status == PAM_SUCCESS) {
-      status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::open_session,
-                         [&]() { return pam_open_session(handle, 0); });
+      status = run_phase(connection.get(), begin.transaction_id, auth::phase_e::open_session, [&]() {
+        return pam_open_session(handle, 0);
+      });
       session_open = status == PAM_SUCCESS;
     }
     if (status == PAM_SUCCESS) {
-      send_result(connection.get(), begin.transaction_id, auth::phase_e::authenticated, PAM_SUCCESS);
+      const bool delivered = send_result(connection.get(), begin.transaction_id, auth::phase_e::authenticated, PAM_SUCCESS);
       std::clog << "PLANK PAM authenticated account " << username
                 << " for local uid " << peer_uid << '\n';
       auth::message_t cancel;
-      if (auth::read_message(connection.get(), cancel) &&
-          (cancel.type != auth::message_type_e::cancel ||
-           cancel.transaction_id != begin.transaction_id)) {
+      const auth::io_context_t session_lifetime {auth::io_context_t::clock_t::time_point::max(), {}};
+      if (delivered && auth::read_message(connection.get(), cancel, session_lifetime) && (cancel.type != auth::message_type_e::cancel || cancel.transaction_id != begin.transaction_id)) {
         std::clog << "PLANK PAM received invalid session-close message\n";
       }
     } else {
@@ -395,16 +381,13 @@ namespace {
    */
   int create_listener(const std::filesystem::path &path) {
     const auto parent = path.parent_path();
-    if (!path.is_absolute() || path.filename().empty() || parent.filename().empty() ||
-        parent.parent_path().filename().empty() ||
-        path.string().size() >= sizeof(sockaddr_un::sun_path)) {
+    if (!path.is_absolute() || path.filename().empty() || parent.filename().empty() || parent.parent_path().filename().empty() || path.string().size() >= sizeof(sockaddr_un::sun_path)) {
       std::cerr << "PAM broker socket must use a dedicated absolute runtime directory\n";
       return -1;
     }
     std::error_code error;
     const auto existing_parent = std::filesystem::symlink_status(parent, error);
-    if (!error && (std::filesystem::is_symlink(existing_parent) ||
-                   !std::filesystem::is_directory(existing_parent))) {
+    if (!error && (std::filesystem::is_symlink(existing_parent) || !std::filesystem::is_directory(existing_parent))) {
       std::cerr << "PAM broker runtime path is not a real directory\n";
       return -1;
     }
@@ -415,13 +398,11 @@ namespace {
       return -1;
     }
     struct stat parent_metadata {};
-    if (lstat(parent.c_str(), &parent_metadata) < 0 ||
-        !S_ISDIR(parent_metadata.st_mode) || parent_metadata.st_uid != 0) {
+    if (lstat(parent.c_str(), &parent_metadata) < 0 || !S_ISDIR(parent_metadata.st_mode) || parent_metadata.st_uid != 0) {
       std::cerr << "PAM broker runtime directory must be owned by root\n";
       return -1;
     }
-    if (chown(path.parent_path().c_str(), 0, 0) < 0 ||
-        chmod(path.parent_path().c_str(), 0700) < 0) {
+    if (chown(path.parent_path().c_str(), 0, 0) < 0 || chmod(path.parent_path().c_str(), 0700) < 0) {
       std::cerr << "Unable to secure PAM broker runtime directory: "
                 << std::strerror(errno) << '\n';
       return -1;
@@ -451,9 +432,7 @@ namespace {
     sockaddr_un address {};
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, path.c_str(), path.string().size() + 1);
-    if (bind(listener.get(), reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0 ||
-        chown(path.c_str(), 0, 0) < 0 || chmod(path.c_str(), 0600) < 0 ||
-        listen(listener.get(), 16) < 0) {
+    if (bind(listener.get(), reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0 || chown(path.c_str(), 0, 0) < 0 || chmod(path.c_str(), 0600) < 0 || listen(listener.get(), 16) < 0) {
       std::cerr << "Unable to bind PAM broker socket: " << std::strerror(errno) << '\n';
       unlink(path.c_str());
       return -1;
@@ -473,28 +452,6 @@ namespace {
     listening_descriptor = -1;
     if (descriptor >= 0) {
       close(descriptor);
-    }
-  }
-
-  /**
-   * @brief Record that one or more PAM worker processes exited.
-   */
-  void child_ended(int signal_number) {
-    (void) signal_number;
-    child_exited = 1;
-  }
-
-  /**
-   * @brief Reap completed PAM workers and update the active-session registry.
-   */
-  void reap_children() {
-    child_exited = 0;
-    while (true) {
-      const pid_t child = waitpid(-1, nullptr, WNOHANG);
-      if (child <= 0) {
-        break;
-      }
-      children.erase(child);
     }
   }
 
@@ -557,22 +514,26 @@ int main(int argc, char **argv) {
   listening_descriptor = listener;
   std::signal(SIGINT, stop);
   std::signal(SIGTERM, stop);
-  struct sigaction child_action {};
-  child_action.sa_handler = child_ended;
-  sigemptyset(&child_action.sa_mask);
-  child_action.sa_flags = 0;
-  sigaction(SIGCHLD, &child_action, nullptr);
+  std::signal(SIGCHLD, SIG_DFL);  // Preserve waitpid ownership even if the launcher ignored SIGCHLD.
   std::clog << "PLANK PAM broker listening on " << socket_path
             << "; root login " << (policy->allow_root_login ? "allowed" : "denied") << '\n';
 
   while (!stopping) {
-    if (child_exited) {
-      reap_children();
+    if (children.maintain() != 0) {
+      std::clog << "PLANK PAM terminated stalled worker after caller disconnect\n";
+    }
+    // Periodically observe caller EOF even when a PAM module never returns.
+    // This also avoids missing SIGCHLD between reaping and a blocking accept.
+    pollfd ready {listener, POLLIN, 0};
+    if (poll(&ready, 1, 100) <= 0) {
+      continue;
+    }
+    if (stopping) {
+      break;
     }
     sockaddr_un peer_address {};
     socklen_t peer_length = sizeof(peer_address);
-    const int client = accept4(listener, reinterpret_cast<sockaddr *>(&peer_address),
-                               &peer_length, SOCK_CLOEXEC);
+    const int client = accept4(listener, reinterpret_cast<sockaddr *>(&peer_address), &peer_length, SOCK_CLOEXEC);
     if (client < 0) {
       if (errno == EINTR) {
         continue;
@@ -585,9 +546,7 @@ int main(int argc, char **argv) {
 
     ucred credentials {};
     socklen_t credentials_length = sizeof(credentials);
-    if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &credentials,
-                   &credentials_length) < 0 ||
-        credentials_length != sizeof(credentials) || credentials.uid != 0) {
+    if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &credentials, &credentials_length) < 0 || credentials_length != sizeof(credentials) || credentials.uid != 0) {
       close(client);
       continue;
     }
@@ -596,29 +555,22 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    sigset_t child_signal;
-    sigset_t previous_signals;
-    sigemptyset(&child_signal);
-    sigaddset(&child_signal, SIGCHLD);
-    sigprocmask(SIG_BLOCK, &child_signal, &previous_signals);
     const pid_t child = fork();
     if (child == 0) {
       close(listener);
+      children.close_in_child();
       std::signal(SIGINT, SIG_DFL);
       std::signal(SIGTERM, SIG_DFL);
-      std::signal(SIGCHLD, SIG_DFL);
-      sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
       serve_client(client, credentials.uid, policy->allow_root_login);
       std::_Exit(0);
     }
 
-    close(client);
     if (child > 0) {
-      children.insert(child);
+      children.add(child, client);
     } else {
+      close(client);
       std::cerr << "Unable to fork PAM broker worker: " << std::strerror(errno) << '\n';
     }
-    sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
   }
 
   const int descriptor = listening_descriptor;
@@ -626,16 +578,8 @@ int main(int argc, char **argv) {
   if (descriptor >= 0) {
     close(descriptor);
   }
-  reap_children();
-  for (const pid_t child : children) {
-    kill(child, SIGTERM);
-  }
-  while (!children.empty()) {
-    const pid_t child = *children.begin();
-    while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {
-    }
-    children.erase(child);
-  }
+  children.maintain();
+  children.stop();
   unlink(socket_path.c_str());
   return 0;
 }

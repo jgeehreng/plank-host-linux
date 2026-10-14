@@ -11,6 +11,7 @@ extern "C" {
 
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <optional>
@@ -25,7 +26,6 @@ extern "C" {
 #include "audio.h"
 #include "config.h"
 #include "globals.h"
-#include "input.h"
 #include "logging.h"
 #include "session_stream.h"
 #include "plank_bitrate.h"
@@ -48,6 +48,7 @@ namespace session_stream {
           return;
         }
         *launch_owner_ = launch_session;
+        launch_pending_.store(true, std::memory_order_relaxed);
       }
       launch_event.raise(std::move(launch_session));
     }
@@ -56,6 +57,7 @@ namespace session_stream {
       auto lock = launch_owner_.lock();
       if (*launch_owner_ && (*launch_owner_)->id == launch_session_id) {
         launch_owner_->reset();
+        launch_pending_.store(false, std::memory_order_relaxed);
       }
     }
 
@@ -68,6 +70,7 @@ namespace session_stream {
       auto lock = launch_owner_.lock();
       auto launch_session = std::move(*launch_owner_);
       launch_owner_->reset();
+      launch_pending_.store(false, std::memory_order_relaxed);
       launch_event.pop(0s);
       return launch_session;
     }
@@ -75,6 +78,13 @@ namespace session_stream {
     int session_count() {
       auto lock = session_slots_.lock();
       return static_cast<int>(session_slots_->size());
+    }
+
+    bool has_stream_session() const {
+      // The live slot is published before its launch reservation is released.
+      // These are advisory snapshots only; admission still uses the owner lock.
+      return launch_pending_.load(std::memory_order_relaxed) ||
+             occupied_.load(std::memory_order_relaxed);
     }
 
     void clear(const bool all = true, const std::uint32_t termination_reason = 0) {
@@ -91,6 +101,7 @@ namespace session_stream {
           }
           stream::session::join(slot);
           iterator = session_slots_->erase(iterator);
+          occupied_.store(!session_slots_->empty(), std::memory_order_relaxed);
         } else {
           ++iterator;
         }
@@ -107,11 +118,13 @@ namespace session_stream {
     void remove(const std::shared_ptr<stream::session_t> &session) {
       auto lock = session_slots_.lock();
       session_slots_->erase(session);
+      occupied_.store(!session_slots_->empty(), std::memory_order_relaxed);
     }
 
     void insert(const std::shared_ptr<stream::session_t> &session) {
       auto lock = session_slots_.lock();
       session_slots_->emplace(session);
+      occupied_.store(true, std::memory_order_relaxed);
       BOOST_LOG(info) << "New streaming session started [active sessions: "sv
                       << session_slots_->size() << ']';
     }
@@ -119,6 +132,8 @@ namespace session_stream {
     safe::event_t<std::shared_ptr<launch_session_t>> launch_event;
 
   private:
+    std::atomic_bool launch_pending_ {};  ///< Advisory copy of the accepted launch reservation.
+    std::atomic_bool occupied_ {};  ///< Advisory snapshot only; never controls admission.
     sync_util::sync_t<std::set<std::shared_ptr<stream::session_t>>> session_slots_;
     // Retain ownership from HTTP acceptance through native setup. The setup
     // worker removes the request from launch_event while it waits for QUIC,
@@ -137,6 +152,10 @@ namespace session_stream {
     return server.session_count();
   }
 
+  bool has_stream_session() {
+    return server.has_stream_session();
+  }
+
   bool launch_session_pending() {
     return server.launch_owned();
   }
@@ -152,8 +171,9 @@ namespace session_stream {
       );
       plank_transport_native_endpoint_stop(endpoint);
     }
+    // Joining each stream releases held input. Keep desktop-owned tablet
+    // endpoints intact for the authenticated replacement connection.
     server.clear(true, termination_reason);
-    input::terminate_retained_input();
   }
 
   void notify_desktop_handoff() {

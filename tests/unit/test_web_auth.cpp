@@ -1,16 +1,14 @@
+#include "src/auth/web_auth.h"
+
 #include <chrono>
 #include <cstdint>
+#include <gtest/gtest.h>
 #include <memory>
+#include <pwd.h>
 #include <string>
+#include <unistd.h>
 #include <utility>
 #include <vector>
-
-#include <gtest/gtest.h>
-
-#include <pwd.h>
-#include <unistd.h>
-
-#include "src/auth/web_auth.h"
 
 namespace auth = plank::auth;
 
@@ -33,8 +31,7 @@ namespace {
       ++state_->destroyed;
     }
 
-    auth::step_t begin(std::uint64_t transaction_id, std::string_view username,
-                       std::string_view remote_host) override {
+    auth::step_t begin(std::uint64_t transaction_id, std::string_view username, std::string_view remote_host) override {
       state_->transaction_id = transaction_id;
       state_->username = username;
       state_->remote_host = remote_host;
@@ -56,6 +53,8 @@ namespace {
       };
     }
 
+    void cancel() noexcept override {}
+
   private:
     std::shared_ptr<fake_state_t> state_;
   };
@@ -65,7 +64,9 @@ TEST(WebAuthManager, BindsConversationAndTokenToRemotePeer) {
   auto state = std::make_shared<fake_state_t>();
   std::vector<std::string> random_values {"conversation", "token"};
   auth::web_auth_manager_t manager {
-    [state]() { return std::make_unique<fake_conversation_t>(state); },
+    [state]() {
+      return std::make_unique<fake_conversation_t>(state);
+    },
     [&random_values](std::size_t) {
       std::string value = random_values.front();
       random_values.erase(random_values.begin());
@@ -82,8 +83,7 @@ TEST(WebAuthManager, BindsConversationAndTokenToRemotePeer) {
   EXPECT_EQ(state->username, "test-user");
   EXPECT_EQ(state->remote_host, "198.51.100.250");
 
-  EXPECT_EQ(manager.respond("conversation", "198.51.100.99", {"wrong-peer"}).state,
-            auth::step_t::state_e::denied);
+  EXPECT_EQ(manager.respond("conversation", "198.51.100.99", {"wrong-peer"}).state, auth::step_t::state_e::denied);
   const auto success = manager.respond("conversation", "198.51.100.250", {"secret"});
   EXPECT_EQ(success.state, auth::step_t::state_e::authenticated);
   EXPECT_EQ(success.session_token, "token");
@@ -110,7 +110,9 @@ TEST(WebAuthManager, CannotReclaimSessionAfterTheLastStreamEnds) {
   auto state = std::make_shared<fake_state_t>();
   std::vector<std::string> random_values {"conversation", "token"};
   auth::web_auth_manager_t manager {
-    [state]() { return std::make_unique<fake_conversation_t>(state); },
+    [state]() {
+      return std::make_unique<fake_conversation_t>(state);
+    },
     [&random_values](std::size_t) {
       auto value = random_values.front();
       random_values.erase(random_values.begin());
@@ -118,10 +120,8 @@ TEST(WebAuthManager, CannotReclaimSessionAfterTheLastStreamEnds) {
     },
   };
 
-  ASSERT_EQ(manager.begin("test-user", "client").state,
-            auth::step_t::state_e::challenge);
-  ASSERT_EQ(manager.respond("conversation", "client", {"secret"}).state,
-            auth::step_t::state_e::authenticated);
+  ASSERT_EQ(manager.begin("test-user", "client").state, auth::step_t::state_e::challenge);
+  ASSERT_EQ(manager.respond("conversation", "client", {"secret"}).state, auth::step_t::state_e::authenticated);
   {
     auto session = manager.claim("token", "client");
     ASSERT_TRUE(session);
@@ -135,19 +135,23 @@ TEST(WebAuthManager, ExpiresPendingConversation) {
   auto state = std::make_shared<fake_state_t>();
   auto now = auth::web_auth_manager_t::clock_t::time_point {};
   auth::web_auth_manager_t manager {
-    [state]() { return std::make_unique<fake_conversation_t>(state); },
-    [](std::size_t) { return "conversation"; },
-    [&now]() { return now; },
+    [state]() {
+      return std::make_unique<fake_conversation_t>(state);
+    },
+    [](std::size_t) {
+      return "conversation";
+    },
+    [&now]() {
+      return now;
+    },
     std::chrono::seconds {2},
     std::chrono::seconds {3},
   };
-  ASSERT_EQ(manager.begin("test-user", "client").state,
-            auth::step_t::state_e::challenge);
+  ASSERT_EQ(manager.begin("test-user", "client").state, auth::step_t::state_e::challenge);
   now += std::chrono::seconds {3};
   manager.expire();
   EXPECT_EQ(state->destroyed, 1);
-  EXPECT_EQ(manager.respond("conversation", "client", {"secret"}).state,
-            auth::step_t::state_e::denied);
+  EXPECT_EQ(manager.respond("conversation", "client", {"secret"}).state, auth::step_t::state_e::denied);
 }
 
 TEST(WebAuthManager, GeneratesSecureIdentifiersWithinBounds) {

@@ -41,6 +41,13 @@ namespace plank::session {
     std::uint64_t generation {};
     descriptor_t session;
     environment_t environment;
+    std::string account_name {};  ///< Advisory name already resolved by the root supervisor.
+  };
+
+  /** @brief Public advisory desktop state; never an authorization decision. */
+  struct occupancy_t {
+    bool desktop_owned {};  ///< A confirmed user desktop owns the console.
+    std::optional<std::string> account_name;  ///< Present only under administrator opt-in.
   };
 
   struct display_request_t {
@@ -55,6 +62,7 @@ namespace plank::session {
     std::string mode_1;
     std::string mode_2;
     uid_t account_uid {};
+    int primary_output {-1};  ///< Optional primary connector side in left-to-right virtual order.
   };
 
   struct runtime_display_state_t {
@@ -124,11 +132,15 @@ namespace plank::session {
   /** Query the confirmed worker stage; never grants desktop or authentication access. */
   std::string confirmed_desktop_stage();
 
-  /**
-   * Login name of the confirmed user desktop.
-   * Empty unless that desktop is a user session with a publishable account name.
-   */
-  std::optional<std::string> confirmed_user_account_name();
+  /** @brief Normalize a bounded advisory login name, stripping its directory realm. */
+  std::optional<std::string> publishable_account_name(std::string_view name);
+
+  /** @brief Combine one attachment and local logind observation without account lookup. */
+  occupancy_t desktop_occupancy(const update_t &attached, const descriptor_t &active,
+                                bool publish_name);
+
+  /** @brief Read advisory occupancy using local logind state and cached attachment metadata. */
+  occupancy_t confirmed_desktop_occupancy(bool publish_name);
 
   /** Query one logind session. */
   std::optional<descriptor_t> describe(std::string_view session_id);

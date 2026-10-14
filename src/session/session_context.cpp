@@ -31,8 +31,8 @@
 
 namespace plank::session {
   namespace {
-    constexpr std::string_view update_prefix = "SC-SESSION-2";
-    constexpr std::string_view display_request_prefix = "SC-DISPLAY-3";
+    constexpr std::string_view update_prefix = "SC-SESSION-3";
+    constexpr std::string_view display_request_prefix = "SC-DISPLAY-4";
     constexpr std::string_view runtime_display_state_prefix = "SC-DISPLAY-STATE-1";
     constexpr std::size_t maximum_update_size = 8192;
     using login_string_t = std::unique_ptr<char, decltype(&free)>;
@@ -217,7 +217,7 @@ namespace plank::session {
     }
 
     void acknowledge_update(int descriptor, std::uint64_t generation, bool accepted) {
-      const std::string message = "SC-ACK-2\n" + std::to_string(generation) +
+      const std::string message = "SC-ACK-3\n" + std::to_string(generation) +
                                   (accepted ? "\nOK" : "\nREJECT");
       send(descriptor, message.data(), message.size(), MSG_NOSIGNAL);
     }
@@ -284,48 +284,31 @@ namespace plank::session {
       std::string {desktop_stage(current_update->session, *active)} : "unknown";
   }
 
-  namespace {
-    bool publishable_account_name(std::string_view name) {
-      if (name.empty() || name.size() > 64) return false;
-      for (unsigned char character : name) {
-        const bool letter = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
-        const bool digit = character >= '0' && character <= '9';
-        if (!letter && !digit && character != '.' && character != '_' && character != '-') return false;
-      }
-      return true;
+  std::optional<std::string> publishable_account_name(std::string_view name) {
+    if (name.size() > 256 || name.find('\0') != std::string_view::npos) return std::nullopt;
+    name = name.substr(0, name.find('@'));
+    if (name.empty() || name.size() > 64) return std::nullopt;
+    for (unsigned char character : name) {
+      const bool letter = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+      const bool digit = character >= '0' && character <= '9';
+      if (!letter && !digit && character != '.' && character != '_' && character != '-') return std::nullopt;
     }
+    return std::string {name};
+  }
 
-    std::optional<std::string> account_name_for_uid(uid_t uid) {
-      constexpr std::size_t maximum_buffer = 1024U * 1024U;
-      std::size_t size = 16384;
-      std::vector<char> buffer(size);
-      passwd record {};
-      passwd *result = nullptr;
-      while (true) {
-        const int status = getpwuid_r(uid, &record, buffer.data(), buffer.size(), &result);
-        if (status == 0 && result != nullptr && result->pw_name != nullptr) {
-          std::string_view name {result->pw_name};
-          const auto domain = name.find('@');
-          if (domain != std::string_view::npos) name = name.substr(0, domain);
-          return publishable_account_name(name) ? std::optional<std::string> {name} : std::nullopt;
-        }
-        if (status != ERANGE || buffer.size() >= maximum_buffer) return std::nullopt;
-        buffer.resize(std::min(buffer.size() * 2, maximum_buffer));
-      }
-    }
-  }  // namespace
+  occupancy_t desktop_occupancy(const update_t &attached, const descriptor_t &active,
+                                bool publish_name) {
+    if (attached.generation == 0 || desktop_stage(attached.session, active) != "user") return {};
+    return {true, publish_name ? publishable_account_name(attached.account_name) : std::nullopt};
+  }
 
-  std::optional<std::string> confirmed_user_account_name() {
+  occupancy_t confirmed_desktop_occupancy(bool publish_name) {
+    // sd-login reads local logind runtime state, not NSS/LDAP. The account name
+    // was resolved once by the existing supervisor launch path and is bound to
+    // that exact attachment. Never resolve an account or drain a stream here.
     const auto active = active_seat0_graphical_session();
-    uid_t uid {};
-    {
-      std::lock_guard lock {current_update_mutex};
-      if (!active || !current_update || desktop_stage(current_update->session, *active) != "user") {
-        return std::nullopt;
-      }
-      uid = active->uid;
-    }
-    return account_name_for_uid(uid);
+    std::lock_guard lock {current_update_mutex};
+    return active && current_update ? desktop_occupancy(*current_update, *active, publish_name) : occupancy_t {};
   }
 
   std::optional<descriptor_t> describe(std::string_view session_id) {
@@ -465,13 +448,14 @@ namespace plank::session {
   }
 
   std::string session_update_message(const update_t &update) {
-    const std::array<std::string, 15> fields {
+    const std::array<std::string, 16> fields {
       std::to_string(update.generation), update.session.id, std::to_string(update.session.uid),
       update.session.seat, update.session.type, update.session.session_class, update.session.state,
       update.session.active ? "1" : "0", update.session.remote ? "1" : "0",
       update.environment.display, update.environment.xauthority,
       update.environment.runtime_directory, update.environment.dbus_address,
       update.environment.pulse_server, update.environment.pulse_cookie,
+      update.session.session_class == "user" ? publishable_account_name(update.account_name).value_or("") : "",
     };
     if (update.generation == 0 || !eligible_graphical_session(update.session) ||
         update.session.id.empty() || !std::ranges::all_of(fields, [](const auto &field) {
@@ -495,13 +479,15 @@ namespace plank::session {
       fields.emplace_back(message.substr(offset, end - offset));
       offset = end + 1;
     }
-    if (message.size() > maximum_update_size || fields.size() != 16 ||
+    if (message.size() > maximum_update_size || fields.size() != 17 ||
         fields.front() != update_prefix) return std::nullopt;
     const auto generation = parse_integer<std::uint64_t>(fields[1]);
     const auto uid = parse_integer<unsigned long long>(fields[3]);
     if (!generation || *generation == 0 || !uid || *uid > std::numeric_limits<uid_t>::max() ||
         (fields[8] != "0" && fields[8] != "1") ||
-        (fields[9] != "0" && fields[9] != "1")) return std::nullopt;
+        (fields[9] != "0" && fields[9] != "1") ||
+        (!fields[16].empty() && (fields[6] != "user" ||
+          publishable_account_name(fields[16]) != fields[16]))) return std::nullopt;
     update_t result {
       *generation,
       {
@@ -513,6 +499,7 @@ namespace plank::session {
         std::string {fields[10]}, std::string {fields[11]}, std::string {fields[12]},
         std::string {fields[13]}, std::string {fields[14]}, std::string {fields[15]},
       },
+      std::string {fields[16]},
     };
     return eligible_graphical_session(result.session) ?
              std::optional<update_t> {std::move(result)} : std::nullopt;
@@ -530,20 +517,22 @@ namespace plank::session {
       ((request.layout == "single" || request.layout == "dual-horizontal") &&
        plank::topology::valid_virtual_layout_modes(
          request.layout, request.mode_1, request.mode_2
-       ));
+       ) && plank::topology::valid_primary_output(request.layout, request.primary_output));
     const bool control_valid = request.action == display_request_t::action_t::acquire ||
       ((request.action == display_request_t::action_t::activate ||
         request.action == display_request_t::action_t::release ||
         request.action == display_request_t::action_t::start_user ||
         request.action == display_request_t::action_t::logout) &&
-       request.layout.empty() && request.mode_1.empty() && request.mode_2.empty());
+       request.layout.empty() && request.mode_1.empty() && request.mode_2.empty() &&
+       request.primary_output == -1);
     if (action.empty() || !acquire_valid || !control_valid || request.account_uid == 0) {
       return {};
     }
     const auto account_uid = std::to_string(request.account_uid);
-    const std::array<std::string_view, 6> fields {
+    const auto primary_output = std::to_string(request.primary_output);
+    const std::array<std::string_view, 7> fields {
       display_request_prefix, action, request.layout, request.mode_1,
-      request.mode_2, account_uid
+      request.mode_2, account_uid, primary_output
     };
     std::string message;
     for (const auto field : fields) {
@@ -563,11 +552,12 @@ namespace plank::session {
       fields.emplace_back(message.substr(offset, end - offset));
       offset = end + 1;
     }
-    if (message.size() > maximum_update_size || fields.size() != 6 ||
+    if (message.size() > maximum_update_size || fields.size() != 7 ||
         fields.front() != display_request_prefix) return std::nullopt;
     const auto account_uid = parse_integer<unsigned long long>(fields[5]);
     if (!account_uid || *account_uid == 0 ||
         *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
+    if (fields[6] != "-1" && fields[6] != "0" && fields[6] != "1") return std::nullopt;
     const auto action = fields[1] == "acquire" ? display_request_t::action_t::acquire :
       fields[1] == "activate" ? display_request_t::action_t::activate :
       fields[1] == "release" ? display_request_t::action_t::release :
@@ -579,7 +569,7 @@ namespace plank::session {
         fields[1] != "logout") return std::nullopt;
     display_request_t request {
       action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
-      static_cast<uid_t>(*account_uid)
+      static_cast<uid_t>(*account_uid), fields[6] == "-1" ? -1 : fields[6] == "0" ? 0 : 1
     };
     return display_request_message(request).empty() ?
              std::nullopt : std::optional<display_request_t> {std::move(request)};

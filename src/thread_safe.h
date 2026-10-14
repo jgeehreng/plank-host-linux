@@ -398,7 +398,7 @@ namespace safe {
     /**
      * @brief Construct a bounded blocking queue.
      *
-     * @param max_elements Maximum number of queued elements before producers block.
+     * @param max_elements Maximum queued elements; raise() discards on overflow.
      */
     queue_t(std::uint32_t max_elements = 32):
         _max_elements {max_elements} {
@@ -427,11 +427,31 @@ namespace safe {
     }
 
     /**
+     * @brief Retain reliable events without discarding queued predecessors.
+     * @param value Event moved only when accepted.
+     * @param delay Maximum wait for space; stop interrupts the wait.
+     * @return Whether the event was accepted.
+     */
+    template<class Rep, class Period>
+    bool raise_reliable(T &&value, std::chrono::duration<Rep, Period> delay) {
+      std::unique_lock lock {_lock};
+      if (!_cv.wait_for(lock, delay, [&] {
+            return !_continue || _queue.size() < _max_elements;
+          }) || !_continue) {
+        return false;
+      }
+      _queue.emplace_back(std::move(value));
+      _cv.notify_all();
+      return true;
+    }
+
+    /**
      * @brief Inspect the next queued value without popping it.
      *
      * @return True when a value is available to inspect.
      */
     bool peek() {
+      std::lock_guard lock {_lock};
       return _continue && !_queue.empty();
     }
 
@@ -458,6 +478,8 @@ namespace safe {
       auto val = std::move(_queue.front());
       _queue.erase(std::begin(_queue));
 
+      _cv.notify_all();
+
       return val;
     }
 
@@ -483,6 +505,8 @@ namespace safe {
 
       auto val = std::move(_queue.front());
       _queue.erase(std::begin(_queue));
+
+      _cv.notify_all();
 
       return val;
     }
@@ -513,6 +537,7 @@ namespace safe {
      * @return True while the queue accepts producers and consumers.
      */
     [[nodiscard]] bool running() const {
+      std::lock_guard lock {_lock};
       return _continue;
     }
 
@@ -520,7 +545,7 @@ namespace safe {
     bool _continue {true};
     std::uint32_t _max_elements;
 
-    std::mutex _lock;
+    mutable std::mutex _lock;
     std::condition_variable _cv;
 
     std::vector<T> _queue;

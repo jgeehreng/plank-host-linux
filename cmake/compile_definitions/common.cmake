@@ -193,6 +193,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/input.h"
         "${CMAKE_SOURCE_DIR}/src/raw_hid_tablet.cpp"
         "${CMAKE_SOURCE_DIR}/src/raw_hid_tablet.h"
+        "${CMAKE_SOURCE_DIR}/src/raw_hid_contact.cpp"
+        "${CMAKE_SOURCE_DIR}/src/raw_hid_contact.h"
         "${CMAKE_SOURCE_DIR}/src/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/audio.h"
         "${CMAKE_SOURCE_DIR}/src/platform/common.h"

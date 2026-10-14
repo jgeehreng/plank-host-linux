@@ -8,17 +8,19 @@
 #include <array>
 #include <bit>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <poll.h>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
-#include <type_traits>
-#include <vector>
-
 #include <sys/socket.h>
+#include <type_traits>
 #include <unistd.h>
+#include <vector>
 
 namespace plank::auth {
   constexpr std::uint32_t wire_magic = 0x504c4150U;  ///< ASCII `PLAP` in host notation.
@@ -27,10 +29,71 @@ namespace plank::auth {
   constexpr std::size_t maximum_field_size = 4096U;  ///< Per-string allocation limit.
   constexpr std::size_t maximum_fields = 64U;  ///< Per-message list-entry limit.
 
+  /** @brief One absolute deadline and cancellation token for a complete IPC operation. */
+  struct io_context_t {
+    using clock_t = std::chrono::steady_clock;  ///< Clock unaffected by wall-time adjustments.
+    clock_t::time_point deadline = clock_t::now() + std::chrono::seconds {30};  ///< Whole-operation deadline.
+    std::stop_token cancellation;  ///< Optional owner cancellation, safe across threads.
+
+    /**
+     * @brief Remaining bounded poll time; zero fails with ECANCELED or ETIMEDOUT.
+     * @param maximum Maximum poll interval in milliseconds.
+     * @return Remaining wait time, or zero on timeout/cancellation.
+     */
+    int remaining_ms(int maximum = std::numeric_limits<int>::max()) const {
+      if (cancellation.stop_requested()) {
+        errno = ECANCELED;
+        return 0;
+      }
+      const auto remaining = deadline - clock_t::now();
+      if (remaining <= clock_t::duration::zero()) {
+        errno = ETIMEDOUT;
+        return 0;
+      }
+      if (remaining >= std::chrono::milliseconds {maximum}) {
+        return maximum;
+      }
+      return static_cast<int>(std::chrono::ceil<std::chrono::milliseconds>(remaining).count());
+    }
+  };
+
+  /**
+   * @brief Wait for socket readiness within an operation's deadline/cancellation.
+   * @param descriptor Connected socket.
+   * @param events Requested poll readiness flags.
+   * @param context Whole-operation deadline and cancellation.
+   * @return False on deadline, cancellation or a poll error.
+   */
+  inline bool wait_ready(int descriptor, short events, const io_context_t &context) {
+    while (true) {
+      const int timeout = context.remaining_ms(context.cancellation.stop_possible() ? 25 : std::numeric_limits<int>::max());
+      if (timeout == 0) {
+        return false;
+      }
+      pollfd ready {descriptor, events, 0};
+      const int result = poll(&ready, 1, timeout);
+      if (result < 0 && errno == EINTR) {
+        continue;
+      }
+      if (result < 0) {
+        return false;
+      }
+      if (result == 0) {
+        continue;
+      }
+      if (ready.revents & POLLNVAL) {
+        errno = EBADF;
+        return false;
+      }
+      // Let recv/send report EOF or the concrete socket error on HUP/ERR.
+      return context.remaining_ms() != 0;
+    }
+  }
+
   /**
    * @brief Messages exchanged between Sunshine and the privileged broker.
    */
-  enum class message_type_e: std::uint16_t {
+  enum class message_type_e : std::uint16_t {
     begin = 1,  ///< Begin an authentication transaction.
     challenge = 2,  ///< Deliver PAM prompts and informational messages.
     response = 3,  ///< Return responses corresponding to one challenge.
@@ -41,7 +104,7 @@ namespace plank::auth {
   /**
    * @brief Authentication phase associated with a result message.
    */
-  enum class phase_e: std::uint16_t {
+  enum class phase_e : std::uint16_t {
     protocol = 1,  ///< Local IPC or request validation.
     start = 2,  ///< `pam_start()`.
     authenticate = 3,  ///< `pam_authenticate()`.
@@ -52,6 +115,7 @@ namespace plank::auth {
   };
 
 #pragma pack(push, 1)
+
   /**
    * @brief Fixed header preceding each local broker payload.
    */
@@ -62,6 +126,7 @@ namespace plank::auth {
     std::uint64_t transaction_id;  ///< Nonzero caller-generated transaction identifier.
     std::uint32_t payload_length;  ///< Following payload size in little-endian order.
   };
+
 #pragma pack(pop)
 
   static_assert(sizeof(wire_header_t) == 20);
@@ -157,8 +222,7 @@ namespace plank::auth {
    * @return True when the field was within protocol limits.
    */
   inline bool append_string(std::vector<std::uint8_t> &output, std::string_view value) {
-    if (value.size() > maximum_field_size ||
-        output.size() > maximum_payload_size - sizeof(std::uint32_t) - value.size()) {
+    if (value.size() > maximum_field_size || output.size() > maximum_payload_size - sizeof(std::uint32_t) - value.size()) {
       return false;
     }
     append_integer(output, static_cast<std::uint32_t>(value.size()));
@@ -176,8 +240,7 @@ namespace plank::auth {
    */
   inline bool read_string(std::span<const std::uint8_t> input, std::size_t &offset, std::string &value) {
     std::uint32_t length;
-    if (!read_integer(input, offset, length) || length > maximum_field_size ||
-        offset > input.size() || input.size() - offset < length) {
+    if (!read_integer(input, offset, length) || length > maximum_field_size || offset > input.size() || input.size() - offset < length) {
       return false;
     }
     const auto *begin = reinterpret_cast<const char *>(input.data() + offset);
@@ -196,7 +259,8 @@ namespace plank::auth {
    * @return Wire frame, or an empty vector when validation fails.
    */
   inline std::vector<std::uint8_t> encode_message(const message_t &message) {
-    if (message.transaction_id == 0 || message.payload.size() > maximum_payload_size) {
+    const auto payload_size = message.payload.size();
+    if (message.transaction_id == 0 || payload_size > maximum_payload_size) {
       return {};
     }
     wire_header_t header {
@@ -204,12 +268,12 @@ namespace plank::auth {
       to_little(wire_version),
       to_little(static_cast<std::uint16_t>(message.type)),
       to_little(message.transaction_id),
-      to_little(static_cast<std::uint32_t>(message.payload.size())),
+      to_little(static_cast<std::uint32_t>(payload_size)),
     };
-    std::vector<std::uint8_t> frame(sizeof(header) + message.payload.size());
+    std::vector<std::uint8_t> frame(sizeof(header) + payload_size);
     std::memcpy(frame.data(), &header, sizeof(header));
-    if (!message.payload.empty()) {
-      std::memcpy(frame.data() + sizeof(header), message.payload.data(), message.payload.size());
+    if (payload_size != 0) {
+      std::memcpy(frame.data() + sizeof(header), message.payload.data(), payload_size);
     }
     return frame;
   }
@@ -219,6 +283,7 @@ namespace plank::auth {
    *
    * @param frame Header and payload bytes.
    * @param message Receives the decoded message.
+   * @param context Shared header/body deadline and cancellation.
    * @return True when framing and limits were valid.
    */
   inline bool decode_message(std::span<const std::uint8_t> frame, message_t &message) {
@@ -229,11 +294,7 @@ namespace plank::auth {
     std::memcpy(&header, frame.data(), sizeof(header));
     const auto payload_length = from_little(header.payload_length);
     const auto type = from_little(header.type);
-    if (from_little(header.magic) != wire_magic || from_little(header.version) != wire_version ||
-        from_little(header.transaction_id) == 0 || payload_length > maximum_payload_size ||
-        frame.size() != sizeof(header) + payload_length ||
-        type < static_cast<std::uint16_t>(message_type_e::begin) ||
-        type > static_cast<std::uint16_t>(message_type_e::cancel)) {
+    if (from_little(header.magic) != wire_magic || from_little(header.version) != wire_version || from_little(header.transaction_id) == 0 || payload_length > maximum_payload_size || frame.size() != sizeof(header) + payload_length || type < static_cast<std::uint16_t>(message_type_e::begin) || type > static_cast<std::uint16_t>(message_type_e::cancel)) {
       return false;
     }
     message.type = static_cast<message_type_e>(type);
@@ -247,12 +308,22 @@ namespace plank::auth {
    *
    * @param descriptor Connected stream socket.
    * @param bytes Bytes to write.
+   * @param context Whole-operation deadline and cancellation.
    * @return True when all bytes were written.
    */
-  inline bool write_all(int descriptor, std::span<const std::uint8_t> bytes) {
+  inline bool write_all(int descriptor, std::span<const std::uint8_t> bytes, const io_context_t &context = {}) {
     while (!bytes.empty()) {
-      const auto written = send(descriptor, bytes.data(), bytes.size(), MSG_NOSIGNAL);
+      if (context.remaining_ms() == 0) {
+        return false;
+      }
+      const auto written = send(descriptor, bytes.data(), bytes.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
       if (written < 0 && errno == EINTR) {
+        continue;
+      }
+      if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (!wait_ready(descriptor, POLLOUT, context)) {
+          return false;
+        }
         continue;
       }
       if (written <= 0) {
@@ -268,12 +339,22 @@ namespace plank::auth {
    *
    * @param descriptor Connected stream socket.
    * @param bytes Destination bytes.
+   * @param context Whole-operation deadline and cancellation.
    * @return True when all bytes were read.
    */
-  inline bool read_all(int descriptor, std::span<std::uint8_t> bytes) {
+  inline bool read_all(int descriptor, std::span<std::uint8_t> bytes, const io_context_t &context = {}) {
     while (!bytes.empty()) {
-      const auto count = read(descriptor, bytes.data(), bytes.size());
+      if (context.remaining_ms() == 0) {
+        return false;
+      }
+      const auto count = recv(descriptor, bytes.data(), bytes.size(), MSG_DONTWAIT);
       if (count < 0 && errno == EINTR) {
+        continue;
+      }
+      if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (!wait_ready(descriptor, POLLIN, context)) {
+          return false;
+        }
         continue;
       }
       if (count <= 0) {
@@ -289,11 +370,12 @@ namespace plank::auth {
    *
    * @param descriptor Connected stream socket.
    * @param message Message to send.
+   * @param context Whole-operation deadline and cancellation.
    * @return True when the complete frame was written.
    */
-  inline bool write_message(int descriptor, const message_t &message) {
+  inline bool write_message(int descriptor, const message_t &message, const io_context_t &context = {}) {
     const auto frame = encode_message(message);
-    return !frame.empty() && write_all(descriptor, frame);
+    return !frame.empty() && write_all(descriptor, frame, context);
   }
 
   /**
@@ -301,11 +383,12 @@ namespace plank::auth {
    *
    * @param descriptor Connected stream socket.
    * @param message Message containing sensitive payload bytes.
+   * @param context Whole-operation deadline and cancellation.
    * @return True when the complete frame was written.
    */
-  inline bool write_sensitive_message(int descriptor, const message_t &message) {
+  inline bool write_sensitive_message(int descriptor, const message_t &message, const io_context_t &context = {}) {
     auto frame = encode_message(message);
-    const bool written = !frame.empty() && write_all(descriptor, frame);
+    const bool written = !frame.empty() && write_all(descriptor, frame, context);
     if (!frame.empty()) {
       explicit_bzero(frame.data(), frame.size());
     }
@@ -319,9 +402,9 @@ namespace plank::auth {
    * @param message Receives the decoded message.
    * @return True when a complete valid frame was read.
    */
-  inline bool read_message(int descriptor, message_t &message) {
+  inline bool read_message(int descriptor, message_t &message, const io_context_t &context = {}) {
     std::array<std::uint8_t, sizeof(wire_header_t)> header_bytes;
-    if (!read_all(descriptor, header_bytes)) {
+    if (!read_all(descriptor, header_bytes, context)) {
       return false;
     }
     wire_header_t header;
@@ -332,8 +415,7 @@ namespace plank::auth {
     }
     std::vector<std::uint8_t> frame(sizeof(header) + payload_length);
     std::copy(header_bytes.begin(), header_bytes.end(), frame.begin());
-    if (payload_length != 0 &&
-        !read_all(descriptor, std::span {frame}.subspan(sizeof(header)))) {
+    if (payload_length != 0 && !read_all(descriptor, std::span {frame}.subspan(sizeof(header)), context)) {
       return false;
     }
     return decode_message(frame, message);
