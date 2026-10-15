@@ -462,7 +462,13 @@ namespace nvhttp {
     }
     // Uppercut: on a configured office network, a client may sign in without
     // a broker admission (a presented admission is still verified).
-    const bool office_without_admission = config::nvhttp.require_admission && !body.contains("admission") &&
+    // Some clients send an empty or placeholder "admission" when they have
+    // none; only a complete {v, payload, sig} wrapper counts as presented.
+    const bool admission_presented = body.contains("admission") && body["admission"].is_object() &&
+                                     body["admission"].contains("v") && body["admission"]["v"].is_number_integer() &&
+                                     body["admission"].contains("payload") && body["admission"]["payload"].is_string() &&
+                                     body["admission"].contains("sig") && body["admission"]["sig"].is_string();
+    const bool office_without_admission = config::nvhttp.require_admission && !admission_presented &&
                                           plank::admission::exempt(config::nvhttp.admission_exempt_networks, peer);
     if (office_without_admission) {
       BOOST_LOG(info) << "PLANK admission not required on the office network: peer="sv << peer;
@@ -517,6 +523,7 @@ namespace nvhttp {
           config::nvhttp.admission_max_ttl, config::nvhttp.admission_clock_skew, consume_dir.c_str(), &decision);
       if (decision.status != PLANK_ADMISSION_STATUS_ACCEPT) {
         BOOST_LOG(warning) << "PLANK admission rejected: "sv << decision.reason
+                           << " peer="sv << peer
                            << " admission_id="sv << decision.admission_id
                            << " key_id="sv << decision.key_id
                            << " workstation_uniqueid="sv << http::unique_id;
