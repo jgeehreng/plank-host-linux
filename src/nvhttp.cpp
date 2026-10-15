@@ -48,6 +48,7 @@
 #include "broadcast_output.h"
 #include "config.h"
 #include "auth/plank_admission.h"
+#include "auth/admission_networks.h"
 #include "auth/auth_executor.h"
 #include "auth/web_auth.h"
 #include "config.h"
@@ -459,7 +460,14 @@ namespace nvhttp {
                       {{"state", "invalid-request"}});
       return;
     }
-    if (config::nvhttp.require_admission) {
+    // Uppercut: on a configured office network, a client may sign in without
+    // a broker admission (a presented admission is still verified).
+    const bool office_without_admission = config::nvhttp.require_admission && !body.contains("admission") &&
+                                          plank::admission::exempt(config::nvhttp.admission_exempt_networks, peer);
+    if (office_without_admission) {
+      BOOST_LOG(info) << "PLANK admission not required on the office network: peer="sv << peer;
+    }
+    if (config::nvhttp.require_admission && !office_without_admission) {
       std::array<plank_admission_key, PLANK_ADMISSION_KEYS_MAX> keys {};
       size_t key_count = 0;
       bool trust_ok = true;

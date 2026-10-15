@@ -99,6 +99,16 @@ replacement and reboot. When omitted, the host uses `admissions` next to
 Comma-separated `key_id|issuer|base64url-ed25519-public-key` pins. `key_id`
 selects the key; it is not the key material.
 
+### admission_exempt_networks
+
+Comma-separated office networks, as `address/prefix` (for example
+`192.168.76.0/24, 10.20.0.0/16`), whose clients may sign in without a broker
+admission while `require_admission` is `true`. Default: empty, so every client
+needs an admission. An admission that a client does present is still verified.
+If any entry does not parse, no network is exempt. Do not list the network
+the broker's relay connects from, or relayed outside clients would be exempt
+too.
+
 ### broadcast_output
 
 Start a point-to-point UltraGrid sender for the pinned local NDI source while

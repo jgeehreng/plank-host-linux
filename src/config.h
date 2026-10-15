@@ -233,6 +233,7 @@ namespace config {
     int admission_clock_skew;  ///< Wall-clock tolerance in seconds. Negative means unset.
     std::string admission_consume_dir;  ///< Machine-stable one-use admission directory.
     std::string admission_trust;  ///< key_id|issuer|base64url-public-key entries.
+    std::string admission_exempt_networks;  ///< Office networks (CIDR list) that may sign in without an admission.
   };
 
   /**

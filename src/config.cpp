@@ -22,6 +22,7 @@
 // local includes
 #include "broadcast_output.h"
 #include "config.h"
+#include "auth/admission_networks.h"
 #include "entry_handler.h"
 #include "file_handler.h"
 #include "logging.h"
@@ -821,6 +822,7 @@ namespace config {
     -1,  // admission_clock_skew
     {},  // admission_consume_dir
     {},  // admission_trust
+    {},  // admission_exempt_networks
   };
 
   /**
@@ -1572,6 +1574,11 @@ namespace config {
     int_between_f(vars, "admission_clock_skew", nvhttp.admission_clock_skew, {0, 86400});
     path_f(vars, "admission_consume_dir", nvhttp.admission_consume_dir);
     string_f(vars, "admission_trust", nvhttp.admission_trust);
+    string_f(vars, "admission_exempt_networks", nvhttp.admission_exempt_networks);
+    if (!nvhttp.admission_exempt_networks.empty() &&
+        !plank::admission::parse_networks(nvhttp.admission_exempt_networks)) {
+      BOOST_LOG(error) << "admission_exempt_networks is not a list of address/prefix entries; no network is exempt"sv;
+    }
 
     // The root-owned PAM broker enforces this setting. Consume it here so the
     // media worker accepts the shared configuration without owning auth policy.

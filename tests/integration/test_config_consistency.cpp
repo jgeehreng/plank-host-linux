@@ -117,6 +117,7 @@ TEST(ConfigConsistencyTest, RuntimeOptionsMatchPlankProductPolicy) {
     "admission_clock_skew",
     "admission_consume_dir",
     "admission_max_ttl",
+    "admission_exempt_networks",
     "admission_trust",
     "allow_root_login",
     "audio_sink",
