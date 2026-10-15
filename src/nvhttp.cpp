@@ -354,6 +354,51 @@ namespace nvhttp {
     start_desktop_by_conversation[conversation_id] = start_desktop;
   }
 
+  // Uppercut: PAM can ask more than once in one sign-in. pam_sss, for
+  // example, sends "Your password will expire" after the password, and the
+  // client acknowledges it with an empty answer. GDM needs the password, so
+  // non-empty answers are kept per conversation until PAM finishes.
+  std::mutex gdm_secrets_mutex;
+  std::unordered_map<std::string, std::vector<std::string>> gdm_secrets_by_conversation;
+
+  void wipe_secrets(std::vector<std::string> &secrets) {
+    for (auto &secret : secrets) {
+      if (!secret.empty()) {
+        explicit_bzero(secret.data(), secret.size());
+      }
+    }
+    secrets.clear();
+  }
+
+  std::vector<std::string> take_gdm_secrets(const std::string &conversation_id) {
+    std::lock_guard lock {gdm_secrets_mutex};
+    const auto found = gdm_secrets_by_conversation.find(conversation_id);
+    if (found == gdm_secrets_by_conversation.end()) {
+      return {};
+    }
+    auto secrets = std::move(found->second);
+    gdm_secrets_by_conversation.erase(found);
+    return secrets;
+  }
+
+  void keep_gdm_secrets(const std::string &conversation_id, std::vector<std::string> &secrets) {
+    if (conversation_id.empty() || secrets.empty()) {
+      wipe_secrets(secrets);
+      return;
+    }
+    std::lock_guard lock {gdm_secrets_mutex};
+    if (gdm_secrets_by_conversation.size() >= 32) {
+      for (auto &entry : gdm_secrets_by_conversation) {
+        wipe_secrets(entry.second);
+      }
+      gdm_secrets_by_conversation.clear();
+    }
+    auto &stored = gdm_secrets_by_conversation[conversation_id];
+    wipe_secrets(stored);
+    stored = std::move(secrets);
+    secrets.clear();
+  }
+
   bool take_start_desktop(const std::string &conversation_id, bool fallback) {
     std::lock_guard lock {start_desktop_mutex};
     const auto found = start_desktop_by_conversation.find(conversation_id);
@@ -587,15 +632,22 @@ namespace nvhttp {
     if (body.contains("start_desktop")) {
       take_start_desktop(conversation_id, *start_desktop);
     }
-    std::vector<std::string> secrets = responses;
-    const auto step = web_auth->respond(conversation_id, peer, std::move(responses), cancellation);
-    remember_start_desktop(step.conversation_id, *start_desktop);
-    maybe_start_user_session_after_pam(step, peer, secrets, *start_desktop);
-    for (auto &secret : secrets) {
-      if (!secret.empty()) {
-        explicit_bzero(secret.data(), secret.size());
+    // Answers from earlier rounds of this conversation, plus this round's
+    // non-empty ones (an empty answer acknowledges an information message).
+    std::vector<std::string> secrets = take_gdm_secrets(conversation_id);
+    for (const auto &value : responses) {
+      if (!value.empty() && secrets.size() < plank::session::maximum_gdm_secrets) {
+        secrets.push_back(value);
       }
     }
+    const auto step = web_auth->respond(conversation_id, peer, std::move(responses), cancellation);
+    remember_start_desktop(step.conversation_id, *start_desktop);
+    if (step.state == plank::auth::step_t::state_e::challenge) {
+      keep_gdm_secrets(step.conversation_id, secrets);
+    } else {
+      maybe_start_user_session_after_pam(step, peer, secrets, *start_desktop);
+    }
+    wipe_secrets(secrets);
     write_auth_json(response, SimpleWeb::StatusCode::success_ok, auth_step_json(step));
   }
 

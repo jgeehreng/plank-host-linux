@@ -205,21 +205,29 @@ namespace plank::session {
       }
     } wiper {&secrets};
 
-    if (!valid_gdm_username(username) || secrets.empty() || secrets.size() > maximum_gdm_secrets) {
+    if (!valid_gdm_username(username)) {
+      BOOST_LOG(warning) << "GDM login skipped: the account name is not usable"sv;
+      return false;
+    }
+    if (secrets.empty() || secrets.size() > maximum_gdm_secrets) {
+      BOOST_LOG(warning) << "GDM login skipped: "sv << secrets.size() << " PAM answers to replay"sv;
       return false;
     }
     for (const auto &secret : secrets) {
       if (secret.empty() || secret.size() > maximum_gdm_secret ||
           secret.find('\0') != std::string::npos) {
+        BOOST_LOG(warning) << "GDM login skipped: a PAM answer is not usable"sv;
         return false;
       }
     }
     if (geteuid() != 0) {
+      BOOST_LOG(warning) << "GDM login skipped: the host is not running as root"sv;
       return false;
     }
     const auto greeter = active_seat0_graphical_session();
     if (!greeter || greeter->session_class != "greeter" ||
         greeter->id.empty() || greeter->id.size() > maximum_gdm_session_id) {
+      BOOST_LOG(warning) << "GDM login skipped: no active seat0 GDM greeter"sv;
       return false;
     }
 
